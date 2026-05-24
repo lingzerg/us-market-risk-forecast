@@ -960,6 +960,10 @@
         box.textContent = "当前是双击 file:// 打开，未检测到 http://localhost:8010 本地代理。页面会尝试浏览器直连公开源；如果日志显示 NETWORK/CORS，通常是浏览器安全策略拦截。完整抓取建议双击 start-dashboard.cmd 或运行 node server.js 后打开 http://localhost:8010。";
         return;
       }
+      if (location.hostname.endsWith("github.io")) {
+        box.textContent = "当前运行在 GitHub Pages 静态模式。GitHub Pages 不能运行 server.js，本页面会用浏览器直连公开数据源；若部分数据失败并显示 NETWORK/CORS，属于公开源跨域限制。";
+        return;
+      }
       box.textContent = "未检测到本地代理健康接口 /health。请确认 server.js 正在运行，或刷新页面重试。";
     }
 
