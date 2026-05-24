@@ -35,9 +35,15 @@
    - `数据来源`：列出每个场景依赖的数据来源。
    - `参数调整`：说明算法，并开放每条规则的权重。
 
+6. GitHub Pages 效果预览
+   - GitHub Pages 不能运行 `server.js`，浏览器直连公开源又容易被 CORS 拦截。
+   - 项目提供 GitHub Actions 工作流，把公开数据抓取成 `data/market-snapshot.json`。
+   - GitHub Pages 页面优先读取这个同源 JSON，因此线上页面不需要后端也能展示数据。
+   - GitHub Pages 主要用于预览效果；推荐下载项目后本地使用。
+
 ## 运行方式
 
-推荐方案一：直接双击静态页面，侵入最低。
+推荐方案一：下载项目后本地使用，直接双击静态页面，侵入最低。
 
 ```text
 index.html
@@ -91,6 +97,37 @@ http://localhost:8010/health
 
 如果本地代理已启动，页面会自动通过代理请求数据。  
 如果本地代理没有启动，页面会尝试浏览器直连公开数据源；部分站点可能被 CORS 拦截，此时日志会显示 `NETWORK/CORS`。这种情况下再双击 `start-dashboard.cmd` 即可。
+
+## GitHub Pages 部署说明
+
+GitHub Pages 主要用于预览页面效果，不是推荐的完整使用方式。推荐用户点击页面上的 `GitHub 仓库` 按钮下载项目，然后按上面的本地方式运行。
+
+GitHub Pages 是纯静态托管，不能运行 `server.js`。为了让线上页面尽量能展示数据，本项目使用静态快照方案：
+
+```text
+GitHub Actions 抓数据 -> 写入 data/market-snapshot.json -> GitHub Pages 读取同源 JSON
+```
+
+需要做两件事：
+
+1. 在仓库 `Settings` -> `Pages` 中启用 GitHub Pages：
+   - `Source` 选择 `Deploy from a branch`
+   - `Branch` 选择 `main`
+   - folder 选择 `/ (root)`
+
+2. 在仓库 `Actions` 中运行：
+
+```text
+Update market snapshot
+```
+
+这个工作流也会在工作日定时运行。它会更新：
+
+```text
+data/market-snapshot.json
+```
+
+如果 GitHub Pages 页面显示数据为空或都是 `NETWORK/CORS`，通常说明快照还没有生成或 Pages 还没部署到最新提交。进入 `Actions` 手动运行一次 `Update market snapshot`，等工作流完成后刷新 GitHub Pages 页面。
 
 ## 计算方式
 

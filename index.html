@@ -101,6 +101,25 @@
       opacity: 0.72;
     }
 
+    .buttonLink {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid #b9c2bc;
+      background: #fff;
+      color: var(--ink);
+      border-radius: 6px;
+      min-height: 38px;
+      padding: 0 12px;
+      font: inherit;
+      text-decoration: none;
+    }
+
+    .buttonLink:hover {
+      background: #f7faf8;
+      text-decoration: none;
+    }
+
     .timestamp {
       color: var(--muted);
       font-size: 12px;
@@ -634,6 +653,7 @@
         <p class="lede">页面打开后会并行请求公开数据源，按 VIX、指数回撤、情绪、信用、美元、银行与金融压力等维度判断当前最接近的场景。数据不足时会明确列出缺省项，并给出近似判断。</p>
       </div>
       <div class="controls">
+        <a class="buttonLink" id="repoLink" href="#" target="_blank" rel="noreferrer">GitHub 仓库</a>
         <button class="primary" id="refreshBtn">刷新数据</button>
         <div class="timestamp" id="timestamp">等待请求</div>
       </div>
@@ -723,9 +743,12 @@
   </div>
 
   <script>
+    const FORCE_SNAPSHOT = new URLSearchParams(location.search).get("snapshot") === "1";
+    const IS_GITHUB_PAGES = location.hostname.endsWith("github.io");
     const SERVER_ORIGIN = location.protocol === "file:" ? "http://localhost:8010" : "";
     const PROXY = `${SERVER_ORIGIN}/proxy?url=`;
     const HEALTH_URL = `${SERVER_ORIGIN}/health`;
+    const SNAPSHOT_URL = "data/market-snapshot.json";
 
     const SOURCE_LINKS = {
       vixCboe: "https://www.cboe.com/tradable_products/vix/vix_historical_data/",
@@ -887,7 +910,8 @@
       analysis: null,
       proxyAvailable: false,
       proxyChecked: false,
-      requestMode: "direct"
+      requestMode: "direct",
+      snapshotGeneratedAt: null
     };
 
     const $ = (id) => document.getElementById(id);
@@ -921,6 +945,22 @@
     function getRuleWeight(sceneId, label, fallback = 1) {
       const value = state.ruleWeights?.[sceneId]?.[label];
       return Number.isFinite(Number(value)) ? Number(value) : fallback;
+    }
+
+    function initRepoLink() {
+      const link = $("repoLink");
+      if (!link) return;
+      if (location.hostname.endsWith("github.io")) {
+        const owner = location.hostname.replace(".github.io", "");
+        const repo = location.pathname.split("/").filter(Boolean)[0];
+        if (owner && repo) {
+          link.href = `https://github.com/${owner}/${repo}`;
+          link.title = "打开 GitHub 仓库，建议下载后本地使用";
+          return;
+        }
+      }
+      link.href = "https://github.com/";
+      link.title = "本地模式下无法自动推断仓库地址";
     }
 
     function proxyUrl(url) {
@@ -961,7 +1001,9 @@
         return;
       }
       if (location.hostname.endsWith("github.io")) {
-        box.textContent = "当前运行在 GitHub Pages 静态模式。GitHub Pages 不能运行 server.js，本页面会用浏览器直连公开数据源；若部分数据失败并显示 NETWORK/CORS，属于公开源跨域限制。";
+        box.textContent = state.requestMode === "snapshot"
+          ? `当前运行在 GitHub Pages 静态快照模式。数据来自仓库内 data/market-snapshot.json，生成时间：${state.snapshotGeneratedAt || "未知"}。`
+          : "当前运行在 GitHub Pages 静态模式。GitHub Pages 不能运行 server.js；如果没有可用快照，浏览器直连公开数据源时可能被 CORS 拦截。";
         return;
       }
       box.textContent = "未检测到本地代理健康接口 /health。请确认 server.js 正在运行，或刷新页面重试。";
@@ -990,6 +1032,47 @@
         logSource(label, "failed", message, url, { code, requestUrl: finalUrl });
         addMissing(label, message);
         throw error;
+      }
+    }
+
+    async function loadSnapshotData() {
+      const started = performance.now();
+      logSource("GitHub Pages Snapshot", "loading", "读取静态快照", SNAPSHOT_URL, { code: "--", requestUrl: SNAPSHOT_URL });
+      try {
+        const res = await fetch(`${SNAPSHOT_URL}?ts=${Date.now()}`, { cache: "no-store" });
+        const text = await res.text();
+        if (!res.ok) {
+          const error = new Error(text.slice(0, 180) || res.statusText);
+          error.status = res.status;
+          error.statusText = res.statusText;
+          throw error;
+        }
+        const snapshot = JSON.parse(text);
+        if (!snapshot || typeof snapshot !== "object" || !snapshot.rows) {
+          throw new Error("快照格式无效");
+        }
+        state.rows = snapshot.rows || {};
+        state.metrics = snapshot.metrics || {};
+        state.snapshotGeneratedAt = snapshot.generatedAt || null;
+        state.requestMode = "snapshot";
+        const snapshotSources = Array.isArray(snapshot.sources) ? snapshot.sources : [];
+        for (const item of snapshotSources) {
+          logSource(item.label || "Snapshot Source", item.status || "success", item.message || "来自 GitHub Actions 快照", item.url || SNAPSHOT_URL, {
+            code: item.code || "--",
+            requestUrl: item.requestUrl || item.url || SNAPSHOT_URL
+          });
+          if (item.status === "failed") addMissing(item.label || "Snapshot Source", item.message || "GitHub Actions 抓取失败");
+        }
+        logSource("GitHub Pages Snapshot", "success", `${res.status} ${res.statusText || "OK"} · ${Math.round(performance.now() - started)}ms`, SNAPSHOT_URL, { code: res.status, requestUrl: SNAPSHOT_URL });
+        return true;
+      } catch (error) {
+        const code = error.status || "SNAPSHOT_MISSING";
+        const message = error.status
+          ? `${error.status} ${error.statusText || ""} · ${error.message}`.trim()
+          : `${code} · ${error.message || "快照不可用"}`;
+        logSource("GitHub Pages Snapshot", "failed", message, SNAPSHOT_URL, { code, requestUrl: SNAPSHOT_URL });
+        addMissing("GitHub Pages Snapshot", message);
+        return false;
       }
     }
 
@@ -1575,7 +1658,7 @@
       const pct = total ? Math.round((done / total) * 100) : 0;
       $("requestProgress").innerHTML = `
         <div class="progressMeta">
-          <span>模式：${state.requestMode === "proxy" ? "本地代理" : "浏览器直连"} · ${done}/${total} 完成</span>
+          <span>模式：${state.requestMode === "proxy" ? "本地代理" : state.requestMode === "snapshot" ? "GitHub Pages 静态快照" : "浏览器直连"} · ${done}/${total} 完成</span>
           <span>success ${success} · failed ${failed}</span>
         </div>
         <div class="progressTrack"><div class="progressFill" style="width:${pct}%"></div></div>
@@ -1604,11 +1687,26 @@
       state.sources = [];
       state.missing = [];
       state.proxyChecked = false;
+      state.snapshotGeneratedAt = null;
+      state.requestMode = "direct";
       renderLog();
       renderSceneDetails();
       renderSourceDetails();
       renderWeightControls();
       await checkProxyHealth();
+
+      if ((IS_GITHUB_PAGES && !state.proxyAvailable) || FORCE_SNAPSHOT) {
+        const loaded = await loadSnapshotData();
+        renderProxyDiagnostic();
+        if (loaded) {
+          buildMetrics();
+          const analysis = analyze();
+          renderAll(analysis);
+          $("refreshBtn").disabled = false;
+          $("refreshBtn").textContent = "刷新数据";
+          return;
+        }
+      }
 
       const jobs = [
         loadCboeVix(),
@@ -1648,6 +1746,7 @@
     renderSceneDetails();
     renderSourceDetails();
     renderWeightControls();
+    initRepoLink();
     refresh();
   </script>
 </body>
