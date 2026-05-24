@@ -37,19 +37,29 @@
 
 ## 运行方式
 
-推荐直接双击：
+推荐方案一：直接双击静态页面，侵入最低。
+
+```text
+index.html
+```
+
+这种方式不会启动本地服务，也不会在本机开端口。页面会直接用浏览器 JavaScript 请求公开数据源。
+
+如果数据获取不全，或者日志里出现 `NETWORK/CORS`、`Failed to fetch`，再使用方案二。
+
+方案二：双击启动本地代理。
 
 ```text
 start-dashboard.cmd
 ```
 
-它会启动本地服务，并打开：
+它会启动本地只读代理，并打开：
 
 ```text
 http://localhost:8010
 ```
 
-也可以在终端运行：
+也可以手动在终端运行：
 
 ```powershell
 node server.js
@@ -63,6 +73,8 @@ http://localhost:8010
 
 ## 为什么需要 `server.js`
 
+`server.js` 不是首选必需项。它只是在静态页面直连数据源不完整时使用。
+
 很多公开金融数据站点不允许浏览器直接跨域请求。`server.js` 是一个本地只读代理：
 
 - 提供静态页面服务。
@@ -71,14 +83,14 @@ http://localhost:8010
 - 不保存数据。
 - 不需要第三方依赖。
 
-如果直接双击 `index.html`，页面会先检查：
+直接双击 `index.html` 时，页面会先检查：
 
 ```text
 http://localhost:8010/health
 ```
 
 如果本地代理已启动，页面会自动通过代理请求数据。  
-如果本地代理没有启动，页面会尝试浏览器直连公开数据源；部分站点可能被 CORS 拦截，此时日志会显示 `NETWORK/CORS`。
+如果本地代理没有启动，页面会尝试浏览器直连公开数据源；部分站点可能被 CORS 拦截，此时日志会显示 `NETWORK/CORS`。这种情况下再双击 `start-dashboard.cmd` 即可。
 
 ## 计算方式
 
@@ -217,7 +229,13 @@ http://localhost:8010/health
 | `code: 502` | 本地代理请求上游失败 |
 | `NETWORK/CORS` | 浏览器直连被网络或 CORS 安全策略拦截 |
 
-如果所有数据都显示 `NETWORK/CORS` 或 `Failed to fetch`，通常说明没有通过本地代理访问。请双击 `start-dashboard.cmd`，或者运行：
+如果所有数据都显示 `NETWORK/CORS` 或 `Failed to fetch`，通常说明浏览器直连被拦截。此时再使用第二方案，双击：
+
+```text
+start-dashboard.cmd
+```
+
+或者运行：
 
 ```powershell
 node server.js
