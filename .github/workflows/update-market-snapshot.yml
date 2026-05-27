@@ -17,11 +17,13 @@ jobs:
         with:
           node-version: "22"
       - name: Fetch market data snapshot
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: node scripts/fetch-market-snapshot.mjs
       - name: Commit snapshot
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/market-snapshot.json
+          git add data/market-snapshot.json data/market-snapshot.inline.js
           git diff --cached --quiet || git commit -m "chore: update market snapshot"
           git push

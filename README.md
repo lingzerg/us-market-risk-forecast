@@ -29,6 +29,7 @@
    - 成功时显示 HTTP 状态码，例如 `code: 200`。
    - 失败时显示 HTTP 状态码，例如 `400`、`404`、`500`、`502`。
    - 如果浏览器直连被安全策略拦截，会显示 `NETWORK/CORS`。
+   - 会显示核心源/可选源健康度；实时抓取核心健康度过低时会自动用内置快照补齐核心缺项。
 
 5. 折叠说明区
    - `五个场景说明`：解释每个场景的含义和操作倾向。
@@ -49,9 +50,14 @@
 index.html
 ```
 
-这种方式不会启动本地服务，也不会在本机开端口。页面会直接用浏览器 JavaScript 请求公开数据源。
+这种方式不会启动本地服务，也不会在本机开端口。页面会按下面顺序自动取数：
 
-如果数据获取不全，或者日志里出现 `NETWORK/CORS`、`Failed to fetch`，再使用方案二。
+1. 先检查本地代理 `http://localhost:8010/health`。
+2. 如果代理可用，走本地代理实时抓取。
+3. 如果代理不可用，优先读取仓库内置快照 `data/market-snapshot.inline.js`（由 GitHub Actions 生成）。
+4. 如果你手动加 `?direct=1`，才会强制浏览器直连公开数据源（可能出现 `NETWORK/CORS`）。
+
+如果你希望拿到实时数据（而不是快照），再使用方案二。
 
 方案二：双击启动本地代理。
 
@@ -95,8 +101,8 @@ http://localhost:8010
 http://localhost:8010/health
 ```
 
-如果本地代理已启动，页面会自动通过代理请求数据。  
-如果本地代理没有启动，页面会尝试浏览器直连公开数据源；部分站点可能被 CORS 拦截，此时日志会显示 `NETWORK/CORS`。这种情况下再双击 `start-dashboard.cmd` 即可。
+如果本地代理已启动，页面会自动通过代理请求实时数据。  
+如果本地代理没有启动，页面会优先使用 `data/market-snapshot.inline.js` 内置快照；只有你手动加 `?direct=1` 才会强制浏览器直连公开数据源。若出现 `NETWORK/CORS`，直接双击 `start-dashboard.cmd` 即可。
 
 ## GitHub Pages 部署说明
 
@@ -105,7 +111,7 @@ GitHub Pages 主要用于预览页面效果，不是推荐的完整使用方式�
 GitHub Pages 是纯静态托管，不能运行 `server.js`。为了让线上页面尽量能展示数据，本项目使用静态快照方案：
 
 ```text
-GitHub Actions 抓数据 -> 写入 data/market-snapshot.json -> GitHub Pages 读取同源 JSON
+GitHub Actions 抓数据 -> 写入 data/market-snapshot.json + data/market-snapshot.inline.js -> GitHub Pages 读取同源 JSON
 ```
 
 需要做两件事：
@@ -125,7 +131,18 @@ Update market snapshot
 
 ```text
 data/market-snapshot.json
+data/market-snapshot.inline.js
 ```
+
+工作流抓取阶段带有超时与重试；如果单个数据源瞬时失败，会优先回退到上一次快照中的同指标，尽量避免出现“快照大面积缺项”。
+
+建议在仓库 `Settings` -> `Secrets and variables` -> `Actions` 中新增：
+
+```text
+FRED_API_KEY
+```
+
+工作流会优先使用 FRED 官方 API（`api.stlouisfed.org`）；如果未配置或 API 临时失败，会自动回退到 FRED CSV 抓取。
 
 如果 GitHub Pages 页面显示数据为空或都是 `NETWORK/CORS`，通常说明快照还没有生成或 Pages 还没部署到最新提交。进入 `Actions` 手动运行一次 `Update market snapshot`，等工作流完成后刷新 GitHub Pages 页面。
 
@@ -150,6 +167,8 @@ data/market-snapshot.json
 - 该规则不进入分母。
 - 页面会把它列入缺省项。
 - 最终置信度会被降低。
+
+补充：情绪相关抓取项（如 `CNN Fear & Greed`、`AAII`、`Cboe Put/Call`）默认按“可选项”处理，失败会展示但不会像核心宏观/信用指标那样显著拉低置信度。
 
 最终置信度计算：
 
@@ -264,6 +283,8 @@ data/market-snapshot.json
 | `code: 200` | HTTP 请求成功 |
 | `code: 400/404/500` | 上游或本地代理返回错误 |
 | `code: 502` | 本地代理请求上游失败 |
+| `code: LOCAL` | 来自仓库内置快照（`data/market-snapshot.inline.js`） |
+| `code: FALLBACK` | 实时抓取失败后由内置快照补齐 |
 | `NETWORK/CORS` | 浏览器直连被网络或 CORS 安全策略拦截 |
 
 如果所有数据都显示 `NETWORK/CORS` 或 `Failed to fetch`，通常说明浏览器直连被拦截。此时再使用第二方案，双击：

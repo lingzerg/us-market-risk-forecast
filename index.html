@@ -381,6 +381,12 @@
       background: #fff8e8;
     }
 
+    .pill.soft {
+      color: #5f6f68;
+      border-color: #d8dfda;
+      background: #f6f8f7;
+    }
+
     .pill.bad {
       color: var(--red);
       border-color: #efc0c0;
@@ -742,13 +748,19 @@
     </main>
   </div>
 
+  <script src="data/market-snapshot.inline.js"></script>
   <script>
     const FORCE_SNAPSHOT = new URLSearchParams(location.search).get("snapshot") === "1";
+    const FORCE_DIRECT = new URLSearchParams(location.search).get("direct") === "1";
     const IS_GITHUB_PAGES = location.hostname.endsWith("github.io");
     const SERVER_ORIGIN = location.protocol === "file:" ? "http://localhost:8010" : "";
     const PROXY = `${SERVER_ORIGIN}/proxy?url=`;
     const HEALTH_URL = `${SERVER_ORIGIN}/health`;
     const SNAPSHOT_URL = "data/market-snapshot.json";
+    const EMBEDDED_SNAPSHOT_URL = "data/market-snapshot.inline.js";
+    const EMBEDDED_SNAPSHOT = globalThis.__MARKET_SNAPSHOT__ && typeof globalThis.__MARKET_SNAPSHOT__ === "object"
+      ? globalThis.__MARKET_SNAPSHOT__
+      : null;
 
     const SOURCE_LINKS = {
       vixCboe: "https://www.cboe.com/tradable_products/vix/vix_historical_data/",
@@ -900,12 +912,28 @@
     };
 
     const YAHOO_SYMBOLS = ["SPY", "RSP", "HYG", "JNK", "LQD", "UUP", "XLF", "KRE"];
+    const OPTIONAL_SOURCE_LABELS = new Set(["CNN Fear & Greed", "AAII Sentiment", "Cboe Put/Call"]);
+    const OPTIONAL_SOURCE_MATCHERS = [/^CNN Fear & Greed/i, /^AAII Sentiment/i, /^Cboe Put\/Call/i];
+    const FETCH_TIMEOUT_MS = 20000;
+    const FETCH_RETRIES = 2;
+    const CORE_ROW_KEYS = [
+      "vixCboe",
+      "vixFred",
+      "sp500",
+      "hyOas",
+      "igOas",
+      "dollar",
+      "nfci",
+      "stlfsi",
+      ...YAHOO_SYMBOLS.map((symbol) => `y_${symbol}`)
+    ];
 
     const state = {
       metrics: {},
       rows: {},
       sources: [],
       missing: [],
+      sourceHealth: null,
       ruleWeights: loadRuleWeights(),
       analysis: null,
       proxyAvailable: false,
@@ -971,6 +999,61 @@
       return state.proxyAvailable ? proxyUrl(url) : url;
     }
 
+    function isOptionalSourceLabel(label = "") {
+      if (OPTIONAL_SOURCE_LABELS.has(label)) return true;
+      return OPTIONAL_SOURCE_MATCHERS.some((matcher) => matcher.test(label));
+    }
+
+    function shouldRetryFetch(error) {
+      if (!error) return false;
+      if (error.name === "AbortError") return true;
+      const status = Number(error.status);
+      if (Number.isFinite(status) && [408, 425, 429, 500, 502, 503, 504].includes(status)) return true;
+      const message = String(error.message || "");
+      return /network|fetch failed|timeout|timed out|ecconnreset|enotfound|eai_again|tls|socket|und_err/i.test(message);
+    }
+
+    function buildSourceHealth() {
+      const completed = state.sources.filter((item) => item.status === "success" || item.status === "failed");
+      const health = {
+        core: { total: 0, success: 0, failed: 0, ratio: null },
+        optional: { total: 0, success: 0, failed: 0, ratio: null }
+      };
+      for (const item of completed) {
+        const bucket = isOptionalSourceLabel(item.label) ? "optional" : "core";
+        health[bucket].total += 1;
+        if (item.status === "success") health[bucket].success += 1;
+        if (item.status === "failed") health[bucket].failed += 1;
+      }
+      for (const bucket of ["core", "optional"]) {
+        const total = health[bucket].total;
+        health[bucket].ratio = total ? health[bucket].success / total : null;
+      }
+      return health;
+    }
+
+    function countCoreRowsAvailable() {
+      return CORE_ROW_KEYS.filter((key) => Array.isArray(state.rows[key]) && state.rows[key].length > 0).length;
+    }
+
+    function fillRowsFromSnapshot(snapshotRows, reason = "fallback") {
+      if (!snapshotRows || typeof snapshotRows !== "object") return 0;
+      let injected = 0;
+      for (const key of CORE_ROW_KEYS) {
+        const hasCurrent = Array.isArray(state.rows[key]) && state.rows[key].length > 0;
+        const fallbackRows = snapshotRows[key];
+        if (!hasCurrent && Array.isArray(fallbackRows) && fallbackRows.length) {
+          state.rows[key] = fallbackRows;
+          injected += 1;
+          logSource(`Fallback ${key}`, "success", `using embedded snapshot rows (${reason})`, EMBEDDED_SNAPSHOT_URL, {
+            code: "FALLBACK",
+            requestUrl: EMBEDDED_SNAPSHOT_URL
+          });
+        }
+      }
+      return injected;
+    }
+
     async function checkProxyHealth() {
       try {
         const res = await fetch(HEALTH_URL, { cache: "no-store" });
@@ -988,6 +1071,10 @@
     function renderProxyDiagnostic() {
       const box = $("proxyDiagnostic");
       if (!box) return;
+      if (state.requestMode === "proxy+fallback" || state.requestMode === "direct+fallback") {
+        box.textContent = `实时抓取健康度偏低，已自动使用 ${EMBEDDED_SNAPSHOT_URL} 补齐缺失核心数据（快照时间：${state.snapshotGeneratedAt || "未知"}）。`;
+        return;
+      }
       if (state.proxyAvailable && location.protocol === "file:") {
         box.textContent = "当前是双击 file:// 打开，已检测到 http://localhost:8010 本地代理，数据请求会自动通过代理转发。";
         return;
@@ -996,8 +1083,12 @@
         box.textContent = "";
         return;
       }
+      if (state.requestMode === "embedded") {
+        box.textContent = `当前是双击 file:// 打开，未检测到本地代理，已使用仓库内置快照 ${EMBEDDED_SNAPSHOT_URL}（生成时间：${state.snapshotGeneratedAt || "未知"}）。如需实时数据请运行 node server.js 后打开 http://localhost:8010。`;
+        return;
+      }
       if (location.protocol === "file:") {
-        box.textContent = "当前是双击 file:// 打开，未检测到 http://localhost:8010 本地代理。页面会尝试浏览器直连公开源；如果日志显示 NETWORK/CORS，通常是浏览器安全策略拦截。完整抓取建议双击 start-dashboard.cmd 或运行 node server.js 后打开 http://localhost:8010。";
+        box.textContent = "当前是双击 file:// 打开，未检测到 http://localhost:8010 本地代理，且未读取到内置快照。浏览器直连公开源通常会被 CORS 拦截。建议双击 start-dashboard.cmd 或运行 node server.js 后打开 http://localhost:8010。";
         return;
       }
       if (location.hostname.endsWith("github.io")) {
@@ -1009,30 +1100,84 @@
       box.textContent = "未检测到本地代理健康接口 /health。请确认 server.js 正在运行，或刷新页面重试。";
     }
 
+    function applySnapshotData(snapshot, snapshotUrl) {
+      if (!snapshot || typeof snapshot !== "object" || !snapshot.rows) {
+        throw new Error("快照格式无效");
+      }
+      state.rows = snapshot.rows || {};
+      state.metrics = snapshot.metrics || {};
+      state.snapshotGeneratedAt = snapshot.generatedAt || null;
+      const snapshotSources = Array.isArray(snapshot.sources) ? snapshot.sources : [];
+      for (const item of snapshotSources) {
+        logSource(item.label || "Snapshot Source", item.status || "success", item.message || "来自快照", item.url || snapshotUrl, {
+          code: item.code || "--",
+          requestUrl: item.requestUrl || item.url || snapshotUrl
+        });
+        if (item.status === "failed") addMissing(
+          item.label || "Snapshot Source",
+          item.message || "快照抓取失败",
+          { optional: isOptionalSourceLabel(item.label || "") }
+        );
+      }
+    }
+
+    async function loadEmbeddedSnapshotData() {
+      const started = performance.now();
+      logSource("Local Embedded Snapshot", "loading", "读取仓库内置快照", EMBEDDED_SNAPSHOT_URL, { code: "--", requestUrl: EMBEDDED_SNAPSHOT_URL });
+      try {
+        if (!EMBEDDED_SNAPSHOT) throw new Error("未找到内置快照变量");
+        applySnapshotData(EMBEDDED_SNAPSHOT, EMBEDDED_SNAPSHOT_URL);
+        state.requestMode = "embedded";
+        logSource("Local Embedded Snapshot", "success", `LOCAL OK · ${Math.round(performance.now() - started)}ms`, EMBEDDED_SNAPSHOT_URL, { code: "LOCAL", requestUrl: EMBEDDED_SNAPSHOT_URL });
+        return true;
+      } catch (error) {
+        const message = `EMBEDDED_SNAPSHOT_MISSING · ${error.message || "内置快照不可用"}`;
+        logSource("Local Embedded Snapshot", "failed", message, EMBEDDED_SNAPSHOT_URL, { code: "EMBEDDED_SNAPSHOT_MISSING", requestUrl: EMBEDDED_SNAPSHOT_URL });
+        addMissing("Local Embedded Snapshot", message);
+        return false;
+      }
+    }
+
     async function fetchText(url, label) {
       const started = performance.now();
       const finalUrl = requestUrl(url);
       logSource(label, "loading", "请求中", url, { code: "--", requestUrl: finalUrl });
-      try {
-        const res = await fetch(finalUrl, { cache: "no-store" });
-        const text = await res.text();
-        if (!res.ok) {
-          const error = new Error(text.slice(0, 180) || res.statusText);
-          error.status = res.status;
-          error.statusText = res.statusText;
+      const attempts = FETCH_RETRIES + 1;
+      let lastError;
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        try {
+          const res = await fetch(finalUrl, { cache: "no-store", signal: controller.signal });
+          const text = await res.text();
+          if (!res.ok) {
+            const error = new Error(text.slice(0, 180) || res.statusText);
+            error.status = res.status;
+            error.statusText = res.statusText;
+            throw error;
+          }
+          const retryHint = attempt > 1 ? ` · retry ${attempt - 1}` : "";
+          logSource(label, "success", `${res.status} ${res.statusText || "OK"} · ${Math.round(performance.now() - started)}ms${retryHint}`, url, { code: res.status, requestUrl: finalUrl });
+          return text;
+        } catch (error) {
+          lastError = error;
+          const retryable = shouldRetryFetch(error);
+          if (attempt < attempts && retryable) {
+            await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
+            continue;
+          }
+          const code = error.status || (error.name === "AbortError" ? "TIMEOUT" : "NETWORK/CORS");
+          const message = error.status
+            ? `${error.status} ${error.statusText || ""} · ${error.message}`.trim()
+            : `${code} · ${error.message || "Failed to fetch"}`;
+          logSource(label, "failed", `${message} · attempts ${attempt}/${attempts}`, url, { code, requestUrl: finalUrl });
+          addMissing(label, message, { optional: isOptionalSourceLabel(label) });
           throw error;
+        } finally {
+          clearTimeout(timeout);
         }
-        logSource(label, "success", `${res.status} ${res.statusText || "OK"} · ${Math.round(performance.now() - started)}ms`, url, { code: res.status, requestUrl: finalUrl });
-        return text;
-      } catch (error) {
-        const code = error.status || (error.name === "AbortError" ? "TIMEOUT" : "NETWORK/CORS");
-        const message = error.status
-          ? `${error.status} ${error.statusText || ""} · ${error.message}`.trim()
-          : `${code} · ${error.message || "Failed to fetch"}`;
-        logSource(label, "failed", message, url, { code, requestUrl: finalUrl });
-        addMissing(label, message);
-        throw error;
       }
+      throw lastError || new Error("Failed to fetch");
     }
 
     async function loadSnapshotData() {
@@ -1048,21 +1193,8 @@
           throw error;
         }
         const snapshot = JSON.parse(text);
-        if (!snapshot || typeof snapshot !== "object" || !snapshot.rows) {
-          throw new Error("快照格式无效");
-        }
-        state.rows = snapshot.rows || {};
-        state.metrics = snapshot.metrics || {};
-        state.snapshotGeneratedAt = snapshot.generatedAt || null;
+        applySnapshotData(snapshot, SNAPSHOT_URL);
         state.requestMode = "snapshot";
-        const snapshotSources = Array.isArray(snapshot.sources) ? snapshot.sources : [];
-        for (const item of snapshotSources) {
-          logSource(item.label || "Snapshot Source", item.status || "success", item.message || "来自 GitHub Actions 快照", item.url || SNAPSHOT_URL, {
-            code: item.code || "--",
-            requestUrl: item.requestUrl || item.url || SNAPSHOT_URL
-          });
-          if (item.status === "failed") addMissing(item.label || "Snapshot Source", item.message || "GitHub Actions 抓取失败");
-        }
         logSource("GitHub Pages Snapshot", "success", `${res.status} ${res.statusText || "OK"} · ${Math.round(performance.now() - started)}ms`, SNAPSHOT_URL, { code: res.status, requestUrl: SNAPSHOT_URL });
         return true;
       } catch (error) {
@@ -1088,12 +1220,13 @@
       renderLog();
     }
 
-    function addMissing(label, reason) {
-      state.missing.push({ label, reason });
+    function addMissing(label, reason, options = {}) {
+      state.missing.push({ label, reason, optional: Boolean(options.optional) });
     }
 
     function parseSimpleCsv(text) {
       const lines = text.trim().split(/\r?\n/).filter(Boolean);
+      if (!lines.length) return [];
       const headers = lines.shift().split(",").map((h) => h.trim());
       return lines.map((line) => {
         const cells = line.split(",");
@@ -1190,7 +1323,7 @@
 
     async function loadFredSeries() {
       const entries = Object.entries(FRED_SERIES);
-      await Promise.all(entries.map(async ([key, [seriesId, label]]) => {
+      await Promise.allSettled(entries.map(async ([key, [seriesId, label]]) => {
         const text = await fetchText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${seriesId}`, label);
         state.rows[key] = parseFredRows(text, seriesId);
       }));
@@ -1215,7 +1348,7 @@
     }
 
     async function loadYahooSeries() {
-      await Promise.all(YAHOO_SYMBOLS.map((symbol) => loadYahooSymbol(symbol)));
+      await Promise.allSettled(YAHOO_SYMBOLS.map((symbol) => loadYahooSymbol(symbol)));
     }
 
     async function loadCboePutCall() {
@@ -1232,7 +1365,7 @@
         index: pick("INDEX PUT/CALL RATIO"),
         source: SOURCE_LINKS.cboeStats
       };
-      if (!Number.isFinite(state.metrics.putCall.total)) addMissing("Cboe Put/Call", "页面结构未解析到总 Put/Call Ratio");
+      if (!Number.isFinite(state.metrics.putCall.total)) addMissing("Cboe Put/Call", "页面结构未解析到总 Put/Call Ratio", { optional: true });
     }
 
     async function loadAaii() {
@@ -1242,7 +1375,7 @@
       const latestMatch = section.match(/(\d{1,2}\/\d{1,2}\/\d{4})\s+([0-9.]+)%\s+([0-9.]+)%\s+([0-9.]+)%/);
       const avgMatch = text.match(/Historical Averages\s+([0-9.]+)%\s+([0-9.]+)%\s+([0-9.]+)%/);
       if (!latestMatch) {
-        addMissing("AAII Sentiment", "页面结构未解析到最新周度情绪");
+        addMissing("AAII Sentiment", "页面结构未解析到最新周度情绪", { optional: true });
         return;
       }
       state.metrics.aaii = {
@@ -1276,7 +1409,7 @@
           continue;
         }
       }
-      addMissing("CNN Fear & Greed", "官方页面/API 未能稳定返回数值，使用自建代理分数");
+      addMissing("CNN Fear & Greed", "官方页面/API 未能稳定返回数值，使用自建代理分数", { optional: true });
     }
 
     function buildMetrics() {
@@ -1427,11 +1560,12 @@
         ? state.metrics.cnnFearGreed.value
         : state.metrics.fearGreedProxy?.value;
 
-      const check = (label, deps, pass, weight = 1, detail = "") => {
+      const check = (label, deps, pass, weight = 1, detail = "", options = {}) => {
+        const optional = Boolean(options.optional);
         const ready = deps.every(metricAvailable);
         if (!ready) {
-          missing.push(label);
-          evidence.push({ label, status: "missing", detail: "缺少数据" });
+          if (!optional) missing.push(label);
+          evidence.push({ label, status: "missing", detail: optional ? "缺少数据（可选项）" : "缺少数据" });
           return;
         }
         weight = getRuleWeight(sceneId, label, weight);
@@ -1464,7 +1598,7 @@
       if (sceneId === "s3") {
         check("VIX 超过 35", ["vix.value"], () => metricValue("vix.value") >= 35, 3.0, `当前 ${fmt(metricValue("vix.value"))}`);
         check("极端恐惧", fngDep, () => fng() <= 15, 2.2, `当前 ${fmt(fng(), 0)}`);
-        check("AAII 悲观高", ["aaii.bearish", "aaii.bullish"], () => metricValue("aaii.bearish") >= 45 || (metricValue("aaii.bearish") - metricValue("aaii.bullish")) >= 15, 1.2, `Bearish ${fmt(metricValue("aaii.bearish"), 1)}%`);
+        check("AAII 悲观高", ["aaii.bearish", "aaii.bullish"], () => metricValue("aaii.bearish") >= 45 || (metricValue("aaii.bearish") - metricValue("aaii.bullish")) >= 15, 1.2, `Bearish ${fmt(metricValue("aaii.bearish"), 1)}%`, { optional: true });
         check("信用未冻结", ["hyOas.value", "hyOas.change20d"], () => metricValue("hyOas.value") < 8.5 && metricValue("hyOas.change20d") < 2, 0.5, `HY OAS ${fmt(metricValue("hyOas.value"))}`);
         check("银行未崩", ["KRE.change20d", "XLF.change20d"], () => metricValue("KRE.change20d") > -0.1 && metricValue("XLF.change20d") > -0.08, 0.5, `KRE 20 日 ${fmtPct(metricValue("KRE.change20d"))}`);
         check("压力未系统化", ["nfci.value", "stlfsi.value"], () => metricValue("nfci.value") < 0.5 && metricValue("stlfsi.value") < 1, 0.5, `NFCI ${fmt(metricValue("nfci.value"))}`);
@@ -1484,7 +1618,7 @@
         check("情绪超过 75", fngDep, () => fng() >= 75, 1.4, `当前 ${fmt(fng(), 0)}`);
         check("指数接近新高", ["sp500.drawdown"], () => Math.abs(metricValue("sp500.drawdown")) <= 0.02, 1.0, `回撤 ${fmtPct(metricValue("sp500.drawdown"))}`);
         check("宽度恶化", ["breadthProxy.value"], () => metricValue("breadthProxy.value") <= -0.02, 1.0, `RSP-SPY 20 日 ${fmtPct(metricValue("breadthProxy.value"))}`);
-        check("Put/Call 偏投机", ["putCall.total"], () => metricValue("putCall.total") < 0.75, 0.7, `总 Put/Call ${fmt(metricValue("putCall.total"))}`);
+        check("Put/Call 偏投机", ["putCall.total"], () => metricValue("putCall.total") < 0.75, 0.7, `总 Put/Call ${fmt(metricValue("putCall.total"))}`, { optional: true });
       }
 
       const score = possible ? points / possible : 0;
@@ -1570,15 +1704,34 @@
     function renderMissing() {
       const unique = new Map();
       state.missing.forEach((item) => {
-        if (!unique.has(item.label)) unique.set(item.label, item.reason);
+        if (!unique.has(item.label)) {
+          unique.set(item.label, { reason: item.reason, optional: Boolean(item.optional) });
+          return;
+        }
+        const current = unique.get(item.label);
+        if (current.optional && !item.optional) {
+          unique.set(item.label, { reason: item.reason, optional: false });
+        }
       });
       if (!unique.size) {
         $("missingList").innerHTML = `<span class="pill ok">当前核心数据已拿到</span>`;
         return;
       }
-      $("missingList").innerHTML = Array.from(unique.entries()).map(([label, reason]) => `
-        <span class="pill warn" title="${reason.replace(/"/g, "&quot;")}">${label}</span>
-      `).join("");
+      const required = [];
+      const optional = [];
+      for (const [label, payload] of unique.entries()) {
+        if (payload.optional) optional.push([label, payload.reason]);
+        else required.push([label, payload.reason]);
+      }
+      const pills = [];
+      if (!required.length) pills.push(`<span class="pill ok">核心指标可用</span>`);
+      required.forEach(([label, reason]) => {
+        pills.push(`<span class="pill warn" title="${reason.replace(/"/g, "&quot;")}">${label}</span>`);
+      });
+      optional.forEach(([label, reason]) => {
+        pills.push(`<span class="pill soft" title="${reason.replace(/"/g, "&quot;")}">${label}（可选）</span>`);
+      });
+      $("missingList").innerHTML = pills.join("");
     }
 
     function renderSceneDetails() {
@@ -1656,10 +1809,32 @@
       const success = state.sources.filter((item) => item.status === "success").length;
       const failed = state.sources.filter((item) => item.status === "failed").length;
       const pct = total ? Math.round((done / total) * 100) : 0;
+      state.sourceHealth = buildSourceHealth();
+      const modeLabel = state.requestMode === "proxy"
+        ? "本地代理"
+        : state.requestMode === "proxy+fallback"
+          ? "本地代理 + 快照补齐"
+        : state.requestMode === "direct+fallback"
+          ? "浏览器直连 + 快照补齐"
+        : state.requestMode === "snapshot"
+          ? "GitHub Pages 静态快照"
+          : state.requestMode === "embedded"
+            ? "本地内置快照"
+            : "浏览器直连";
+      const coreHealth = state.sourceHealth.core.total
+        ? `${Math.round(state.sourceHealth.core.ratio * 100)}% (${state.sourceHealth.core.success}/${state.sourceHealth.core.total})`
+        : "--";
+      const optionalHealth = state.sourceHealth.optional.total
+        ? `${Math.round(state.sourceHealth.optional.ratio * 100)}% (${state.sourceHealth.optional.success}/${state.sourceHealth.optional.total})`
+        : "--";
       $("requestProgress").innerHTML = `
         <div class="progressMeta">
-          <span>模式：${state.requestMode === "proxy" ? "本地代理" : state.requestMode === "snapshot" ? "GitHub Pages 静态快照" : "浏览器直连"} · ${done}/${total} 完成</span>
+          <span>模式：${modeLabel} · ${done}/${total} 完成</span>
           <span>success ${success} · failed ${failed}</span>
+        </div>
+        <div class="progressMeta">
+          <span>核心源健康度 ${coreHealth}</span>
+          <span>可选源健康度 ${optionalHealth}</span>
         </div>
         <div class="progressTrack"><div class="progressFill" style="width:${pct}%"></div></div>
       `;
@@ -1686,6 +1861,7 @@
       state.rows = {};
       state.sources = [];
       state.missing = [];
+      state.sourceHealth = null;
       state.proxyChecked = false;
       state.snapshotGeneratedAt = null;
       state.requestMode = "direct";
@@ -1694,6 +1870,25 @@
       renderSourceDetails();
       renderWeightControls();
       await checkProxyHealth();
+
+      if (location.protocol === "file:" && !state.proxyAvailable) {
+        const loaded = await loadEmbeddedSnapshotData();
+        renderProxyDiagnostic();
+        if (loaded) {
+          buildMetrics();
+          const analysis = analyze();
+          renderAll(analysis);
+          $("refreshBtn").disabled = false;
+          $("refreshBtn").textContent = "刷新数据";
+          return;
+        }
+        if (!FORCE_DIRECT) {
+          $("refreshBtn").disabled = false;
+          $("refreshBtn").textContent = "刷新数据";
+          $("timestamp").textContent = "等待本地代理";
+          return;
+        }
+      }
 
       if ((IS_GITHUB_PAGES && !state.proxyAvailable) || FORCE_SNAPSHOT) {
         const loaded = await loadSnapshotData();
@@ -1718,6 +1913,19 @@
       ];
 
       await Promise.allSettled(jobs);
+      state.sourceHealth = buildSourceHealth();
+      const coreRatio = Number.isFinite(state.sourceHealth.core.ratio) ? state.sourceHealth.core.ratio : 1;
+      const coreRowsBeforeFallback = countCoreRowsAvailable();
+      const lowHealth = coreRatio < 0.72 || coreRowsBeforeFallback < Math.ceil(CORE_ROW_KEYS.length * 0.66);
+      if (EMBEDDED_SNAPSHOT?.rows && lowHealth && !FORCE_DIRECT) {
+        const injected = fillRowsFromSnapshot(EMBEDDED_SNAPSHOT.rows, "live fetch degraded");
+        if (injected > 0) {
+          state.snapshotGeneratedAt = EMBEDDED_SNAPSHOT.generatedAt || state.snapshotGeneratedAt;
+          if (state.requestMode === "proxy") state.requestMode = "proxy+fallback";
+          if (state.requestMode === "direct") state.requestMode = "direct+fallback";
+          renderProxyDiagnostic();
+        }
+      }
       buildMetrics();
       const analysis = analyze();
       renderAll(analysis);
