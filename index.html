@@ -758,6 +758,9 @@
     const SERVER_ORIGIN = location.protocol === "file:" ? "http://localhost:8010" : "";
     const PROXY = `${SERVER_ORIGIN}/proxy?url=`;
     const HEALTH_URL = `${SERVER_ORIGIN}/health`;
+    const SHOULD_CHECK_PROXY_HEALTH = location.protocol === "file:"
+      || location.hostname === "localhost"
+      || location.hostname === "127.0.0.1";
     const SNAPSHOT_URL = "data/market-snapshot.json";
     const EMBEDDED_SNAPSHOT_URL = "data/market-snapshot.inline.js";
     const EMBEDDED_SNAPSHOT = globalThis.__MARKET_SNAPSHOT__ && typeof globalThis.__MARKET_SNAPSHOT__ === "object"
@@ -1057,6 +1060,13 @@
     }
 
     async function checkProxyHealth() {
+      if (!SHOULD_CHECK_PROXY_HEALTH) {
+        state.proxyAvailable = false;
+        state.requestMode = "direct";
+        state.proxyChecked = true;
+        renderProxyDiagnostic();
+        return;
+      }
       try {
         const res = await fetch(HEALTH_URL, { cache: "no-store" });
         state.proxyAvailable = res.ok;
