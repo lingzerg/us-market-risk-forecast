@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import nodeFs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,8 +7,31 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_FILE = path.join(ROOT, "data", "market-snapshot.json");
 const INLINE_OUT_FILE = path.join(ROOT, "data", "market-snapshot.inline.js");
 const SNAPSHOT_FILE_URL = "data/market-snapshot.json";
-const FRED_API_KEY = String(process.env.FRED_API_KEY || "").trim();
-const FRED_API_BASE = "https://api.stlouisfed.org/fred/series/observations";
+const LOCAL_ENV_FILE = path.join(ROOT, ".env.local");
+function readLocalEnv(filePath) {
+  try {
+    const text = nodeFs.readFileSync(filePath, "utf8");
+    const values = {};
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const split = line.indexOf("=");
+      if (split <= 0) continue;
+      const key = line.slice(0, split).trim();
+      let value = line.slice(split + 1).trim();
+      if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      values[key] = value;
+    }
+    return values;
+  } catch {
+    return {};
+  }
+}
+const LOCAL_ENV = readLocalEnv(LOCAL_ENV_FILE);
+const FRED_API_KEY = String(process.env.FRED_API_KEY || LOCAL_ENV.FRED_API_KEY || "").trim();
+const FRED_API_BASE = "https://api.stlouisfed.org/fred";
 const SOURCE_LINKS = {
   vixCboe: "https://www.cboe.com/tradable_products/vix/vix_historical_data/",
   vixFred: "https://fred.stlouisfed.org/series/VIXCLS",
@@ -54,20 +78,71 @@ const OPTIONS_ACTIVITY_THRESHOLDS = {
   indexLow: 0.9,
   indexHigh: 1.8
 };
+const OPTIONS_NOTICE_TEMPLATES = [
+  {
+    id: "cpi",
+    name: "CPI",
+    seriesId: "CPIAUCSL",
+    impact: "整体通胀读数，通常会直接影响利率预期和指数短线波动。",
+    seriesSource: SOURCE_LINKS.cpi
+  },
+  {
+    id: "coreCpi",
+    name: "核心 CPI",
+    seriesId: "CPILFESL",
+    impact: "剔除食品和能源的粘性通胀，更影响中期政策预期。",
+    seriesSource: SOURCE_LINKS.coreCpi
+  },
+  {
+    id: "pce",
+    name: "PCE",
+    seriesId: "PCEPI",
+    impact: "美联储重点参考口径之一，偏离预期时会带来利率与科技股波动。",
+    seriesSource: SOURCE_LINKS.pce
+  },
+  {
+    id: "corePce",
+    name: "核心 PCE",
+    seriesId: "PCEPILFE",
+    impact: "FOMC 更关注的核心通胀口径，期权隐波常在发布前后抬升。",
+    seriesSource: SOURCE_LINKS.corePce
+  },
+  {
+    id: "payroll",
+    name: "非农就业",
+    seriesId: "PAYEMS",
+    impact: "劳动市场热度的核心指标，常驱动美债收益率和指数方向切换。",
+    seriesSource: SOURCE_LINKS.payroll
+  },
+  {
+    id: "unemployment",
+    name: "失业率",
+    seriesId: "UNRATE",
+    impact: "与非农同属就业报告，失业率意外上行会放大风险偏好变化。",
+    seriesSource: SOURCE_LINKS.unemployment
+  }
+];
 const FETCH_TIMEOUT_MS = Number.isFinite(Number(process.env.FETCH_TIMEOUT_MS))
   ? Math.max(3000, Number(process.env.FETCH_TIMEOUT_MS))
   : 20000;
 const FETCH_RETRIES = Number.isFinite(Number(process.env.FETCH_RETRIES))
   ? Math.max(0, Math.floor(Number(process.env.FETCH_RETRIES)))
   : 2;
+const FETCH_CONCURRENCY = Number.isFinite(Number(process.env.FETCH_CONCURRENCY))
+  ? Math.max(1, Math.floor(Number(process.env.FETCH_CONCURRENCY)))
+  : 5;
+const MACRO_ROW_KEYS = ["cpi", "coreCpi", "pce", "corePce", "payroll", "unemployment"];
+const MACRO_REFRESH_HOURS = Number.isFinite(Number(process.env.MACRO_REFRESH_HOURS))
+  ? Math.max(1, Math.floor(Number(process.env.MACRO_REFRESH_HOURS)))
+  : 24;
 
 const REQUIRED_ROW_KEYS = [
   "vixCboe",
   ...Object.keys(FRED_SERIES),
   ...YAHOO_SYMBOLS.map((symbol) => `y_${symbol}`)
 ];
-const STALE_METRIC_KEYS = ["putCall", "aaii", "cnnFearGreed", "optionsActivity"];
-const OPTIONAL_SOURCE_MATCHERS = [/^CNN Fear & Greed/i, /^AAII Sentiment/i, /^Cboe Put\/Call/i];
+const STALE_METRIC_KEYS = ["putCall", "aaii", "cnnFearGreed", "optionsActivity", "optionsWatch"];
+const OPTIONAL_SOURCE_MATCHERS = [/^CNN Fear & Greed/i, /^AAII Sentiment/i, /^Cboe Put\/Call/i, /^FRED Release /i];
 
 const rows = {};
 const metrics = {};
@@ -91,6 +166,26 @@ function shouldRetry(error) {
   if (Number.isFinite(error.status) && isRetryableStatus(error.status)) return true;
   const message = String(error.message || "");
   return /fetch failed|network|timeout|timed out|ECONNRESET|ENOTFOUND|EAI_AGAIN|socket|TLS|UND_ERR/i.test(message);
+}
+
+async function settleWithConcurrency(items, worker, limit = FETCH_CONCURRENCY) {
+  const total = Array.isArray(items) ? items.length : 0;
+  if (!total) return;
+  const size = Math.max(1, Math.min(limit, total));
+  let index = 0;
+  const runners = Array.from({ length: size }, async () => {
+    while (true) {
+      const current = index;
+      index += 1;
+      if (current >= total) break;
+      try {
+        await worker(items[current], current);
+      } catch {
+        // Keep parity with Promise.allSettled.
+      }
+    }
+  });
+  await Promise.all(runners);
 }
 
 async function fetchText(url, label) {
@@ -167,15 +262,18 @@ function parseFredApiRows(text) {
     .slice(-320);
 }
 
+function fredApiRequestUrl(endpoint, params = {}) {
+  const search = new URLSearchParams({ ...params, file_type: "json" });
+  if (FRED_API_KEY) search.set("api_key", FRED_API_KEY);
+  return `${FRED_API_BASE}/${endpoint}?${search.toString()}`;
+}
+
 function fredApiUrl(seriesId) {
-  const params = new URLSearchParams({
+  return fredApiRequestUrl("series/observations", {
     series_id: seriesId,
-    file_type: "json",
     sort_order: "asc",
-    limit: "100000",
-    api_key: FRED_API_KEY
+    limit: "100000"
   });
-  return `${FRED_API_BASE}?${params.toString()}`;
 }
 
 function parseCboeVixRows(text) {
@@ -202,8 +300,10 @@ function stripTags(html) {
     .trim();
 }
 
-async function loadFredSeries() {
-  await Promise.allSettled(Object.entries(FRED_SERIES).map(async ([key, [seriesId, label]]) => {
+async function loadFredSeries(options = {}) {
+  const skipKeys = options.skipKeys instanceof Set ? options.skipKeys : new Set();
+  const entries = Object.entries(FRED_SERIES).filter(([key]) => !skipKeys.has(key));
+  await settleWithConcurrency(entries, async ([key, [seriesId, label]]) => {
     let loaded = false;
     if (FRED_API_KEY) {
       const apiUrl = fredApiUrl(seriesId);
@@ -228,7 +328,7 @@ async function loadFredSeries() {
     } catch {
       // The failed request has already been recorded by fetchText.
     }
-  }));
+  });
 }
 
 async function loadCboeVix() {
@@ -250,7 +350,9 @@ async function loadYahooSymbol(symbol) {
 }
 
 async function loadYahooSeries() {
-  await Promise.allSettled(YAHOO_SYMBOLS.map((symbol) => loadYahooSymbol(symbol)));
+  await settleWithConcurrency(YAHOO_SYMBOLS, async (symbol) => {
+    await loadYahooSymbol(symbol);
+  });
 }
 
 function buildOptionsActivityFromPutCall(putCall) {
@@ -282,6 +384,126 @@ function buildOptionsActivityFromPutCall(putCall) {
     thresholds: OPTIONS_ACTIVITY_THRESHOLDS,
     unusualCount: alerts.length,
     alerts
+  };
+}
+
+function daysUntilDate(dateText) {
+  if (!dateText) return null;
+  const [y, m, d] = String(dateText).split("-").map((item) => Number(item));
+  if (![y, m, d].every(Number.isFinite)) return null;
+  const targetUtc = Date.UTC(y, m - 1, d);
+  const now = new Date();
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  return Math.round((targetUtc - todayUtc) / 86400000);
+}
+
+async function loadOptionsWatch() {
+  const horizonDays = 14;
+  const today = new Date().toISOString().slice(0, 10);
+  if (!FRED_API_KEY) {
+    metrics.optionsWatch = {
+      generatedAt: new Date().toISOString(),
+      horizonDays,
+      source: "FRED release calendar",
+      events: OPTIONS_NOTICE_TEMPLATES.map((template) => ({
+        id: template.id,
+        name: template.name,
+        impact: template.impact,
+        seriesId: template.seriesId,
+        seriesSource: template.seriesSource,
+        releaseId: null,
+        releaseName: null,
+        releaseSource: null,
+        nextDate: null,
+        daysUntil: null,
+        withinTwoWeeks: false,
+        note: "未配置 FRED_API_KEY，无法查询下一次发布日期。"
+      }))
+    };
+    logSource("FRED Release Calendar", "failed", "FRED_API_KEY missing", "https://api.stlouisfed.org/fred", "API_KEY_MISSING");
+    return;
+  }
+  const releaseMetaById = new Map();
+  const releaseDateById = new Map();
+  const releaseErrorById = new Map();
+  const eventByTemplate = new Map();
+
+  for (const template of OPTIONS_NOTICE_TEMPLATES) {
+    const releaseUrl = fredApiRequestUrl("series/release", { series_id: template.seriesId });
+    try {
+      const text = await fetchText(releaseUrl, `FRED Release ${template.name}`);
+      const payload = JSON.parse(text);
+      const release = Array.isArray(payload?.releases) ? payload.releases[0] : null;
+      const releaseId = Number(release?.id);
+      if (!Number.isFinite(releaseId)) throw new Error("release id missing");
+      const releaseLink = `https://fred.stlouisfed.org/release?rid=${releaseId}`;
+      releaseMetaById.set(releaseId, {
+        id: releaseId,
+        name: release?.name || template.name,
+        source: releaseLink
+      });
+      eventByTemplate.set(template.id, {
+        ...template,
+        releaseId
+      });
+    } catch (error) {
+      eventByTemplate.set(template.id, {
+        ...template,
+        releaseId: null,
+        note: `发布日历获取失败：${error.message || "unknown"}`
+      });
+    }
+  }
+
+  const releaseIds = [...releaseMetaById.keys()];
+  for (const releaseId of releaseIds) {
+    const releaseMeta = releaseMetaById.get(releaseId);
+    const datesUrl = fredApiRequestUrl("release/dates", {
+      release_id: String(releaseId),
+      sort_order: "asc",
+      include_release_dates_with_no_data: "true",
+      limit: "4000"
+    });
+    try {
+      const text = await fetchText(datesUrl, `FRED Release Dates ${releaseMeta?.name || releaseId}`);
+      const payload = JSON.parse(text);
+      const releaseDates = Array.isArray(payload?.release_dates) ? payload.release_dates : [];
+      const next = releaseDates.find((item) => typeof item?.date === "string" && item.date >= today);
+      releaseDateById.set(releaseId, next?.date || null);
+    } catch (error) {
+      releaseErrorById.set(releaseId, `发布日期获取失败：${error.message || "unknown"}`);
+      releaseDateById.set(releaseId, null);
+    }
+  }
+
+  const events = OPTIONS_NOTICE_TEMPLATES.map((template) => {
+    const raw = eventByTemplate.get(template.id) || template;
+    const releaseMeta = Number.isFinite(raw.releaseId) ? releaseMetaById.get(raw.releaseId) : null;
+    const nextDate = Number.isFinite(raw.releaseId) ? releaseDateById.get(raw.releaseId) || null : null;
+    const daysUntil = daysUntilDate(nextDate);
+    const withinTwoWeeks = Number.isFinite(daysUntil) ? daysUntil >= 0 && daysUntil <= horizonDays : false;
+    const errorNote = Number.isFinite(raw.releaseId) ? releaseErrorById.get(raw.releaseId) : null;
+    return {
+      id: raw.id,
+      name: raw.name,
+      impact: raw.impact,
+      seriesId: raw.seriesId,
+      seriesSource: raw.seriesSource,
+      releaseId: Number.isFinite(raw.releaseId) ? raw.releaseId : null,
+      releaseName: releaseMeta?.name || null,
+      releaseSource: releaseMeta?.source || null,
+      nextDate,
+      daysUntil,
+      withinTwoWeeks,
+      note: raw.note || errorNote || null
+    };
+  });
+
+  metrics.optionsWatch = {
+    generatedAt: new Date().toISOString(),
+    horizonDays,
+    source: "FRED release calendar",
+    events
   };
 }
 
@@ -354,6 +576,31 @@ async function readPreviousSnapshot() {
   }
 }
 
+function isSnapshotFresh(snapshot, maxAgeHours = MACRO_REFRESH_HOURS) {
+  const generatedAt = snapshot?.generatedAt;
+  const generatedTs = Date.parse(String(generatedAt || ""));
+  if (!Number.isFinite(generatedTs)) return false;
+  return (Date.now() - generatedTs) <= maxAgeHours * 60 * 60 * 1000;
+}
+
+function preloadMacroRowsFromSnapshot(previousSnapshot) {
+  const skipKeys = new Set();
+  if (!isSnapshotFresh(previousSnapshot)) return skipKeys;
+  const previousRows = previousSnapshot?.rows && typeof previousSnapshot.rows === "object"
+    ? previousSnapshot.rows
+    : {};
+  for (const key of MACRO_ROW_KEYS) {
+    const cachedRows = previousRows[key];
+    if (!Array.isArray(cachedRows) || !cachedRows.length) continue;
+    rows[key] = cachedRows;
+    skipKeys.add(key);
+    const [, label] = FRED_SERIES[key] || [key, key];
+    const url = SOURCE_LINKS[key] || SNAPSHOT_FILE_URL;
+    logSource(`${label} (Snapshot Cache)`, "success", `reuse cached macro rows from snapshot (${previousSnapshot.generatedAt})`, url, "SNAPSHOT_CACHE");
+  }
+  return skipKeys;
+}
+
 function applyFallbackFromPrevious(previousSnapshot) {
   if (!previousSnapshot || typeof previousSnapshot !== "object") return;
   const previousRows = previousSnapshot.rows && typeof previousSnapshot.rows === "object" ? previousSnapshot.rows : {};
@@ -409,13 +656,15 @@ function buildSourceHealth() {
 }
 
 const previousSnapshot = await readPreviousSnapshot();
+const macroSkipKeys = preloadMacroRowsFromSnapshot(previousSnapshot);
 await fs.mkdir(path.dirname(OUT_FILE), { recursive: true });
 
 await Promise.allSettled([
   loadCboeVix(),
-  loadFredSeries(),
+  loadFredSeries({ skipKeys: macroSkipKeys }),
   loadYahooSeries(),
   loadCboePutCall(),
+  loadOptionsWatch(),
   loadAaii(),
   loadCnnFearGreed()
 ]);

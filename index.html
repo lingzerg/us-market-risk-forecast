@@ -289,6 +289,77 @@
       padding: 18px;
     }
 
+    .optionsNoticePanel {
+      margin-top: 18px;
+      padding: 18px;
+    }
+
+    .optionsNoticePanel h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+      line-height: 1.3;
+    }
+
+    .optionsNoticeSummary {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      flex-wrap: wrap;
+    }
+
+    .optionsNoticeGrid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .noticeCard {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 11px;
+      background: #fbfcfa;
+      display: grid;
+      gap: 7px;
+      min-height: 146px;
+    }
+
+    .noticeHead {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .noticeTitle {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.3;
+    }
+
+    .noticeDate,
+    .noticeImpact,
+    .noticeSources,
+    .noticeNote {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 12px;
+    }
+
+    .noticeImpact {
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .noticeNote {
+      color: #7d5c16;
+    }
+
     .accordions {
       display: grid;
       gap: 12px;
@@ -633,6 +704,10 @@
       .evidence {
         grid-template-columns: 1fr;
       }
+
+      .optionsNoticeGrid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
     }
 
     @media (max-width: 620px) {
@@ -657,6 +732,10 @@
       }
 
       .metricGrid {
+        grid-template-columns: 1fr;
+      }
+
+      .optionsNoticeGrid {
         grid-template-columns: 1fr;
       }
 
@@ -705,6 +784,11 @@
           <h2>五个场景匹配度</h2>
           <div id="matchBars"></div>
         </aside>
+      </section>
+
+      <section class="panel optionsNoticePanel">
+        <h2>期权交易注意信息</h2>
+        <div id="optionsNotice"></div>
       </section>
 
       <section class="panel">
@@ -960,6 +1044,14 @@
       indexLow: 0.9,
       indexHigh: 1.8
     };
+    const OPTIONS_NOTICE_TEMPLATES = [
+      { id: "cpi", name: "CPI", impact: "整体通胀读数，通常会影响利率预期和指数短线波动。", source: SOURCE_LINKS.cpi },
+      { id: "coreCpi", name: "核心 CPI", impact: "剔除食品和能源的粘性通胀，更影响中期政策预期。", source: SOURCE_LINKS.coreCpi },
+      { id: "pce", name: "PCE", impact: "美联储重点参考口径之一，偏离预期时常驱动美债和科技股波动。", source: SOURCE_LINKS.pce },
+      { id: "corePce", name: "核心 PCE", impact: "FOMC 更关注的核心通胀口径，期权隐波常在发布前后抬升。", source: SOURCE_LINKS.corePce },
+      { id: "payroll", name: "非农就业", impact: "劳动市场热度的核心指标，常触发指数和汇率快速重定价。", source: SOURCE_LINKS.payroll },
+      { id: "unemployment", name: "失业率", impact: "与非农同属就业报告，意外上行会放大风险偏好变化。", source: SOURCE_LINKS.unemployment }
+    ];
     const METRIC_EXPLAINERS = [
       ["VIX", "市场预期波动率。越高通常代表避险情绪升温，>30 常见于恐慌期。"],
       ["S&P 500 回撤", "指数相对近一年高点的跌幅。回撤越深，风险情绪越强。"],
@@ -977,9 +1069,14 @@
       ["异常期权活动", "用 Cboe Total/Equity/Index Put/Call 的极端区间识别期权情绪异常。"]
     ];
     const OPTIONAL_SOURCE_LABELS = new Set(["CNN Fear & Greed", "AAII Sentiment", "Cboe Put/Call"]);
-    const OPTIONAL_SOURCE_MATCHERS = [/^CNN Fear & Greed/i, /^AAII Sentiment/i, /^Cboe Put\/Call/i];
+    const OPTIONAL_SOURCE_MATCHERS = [/^CNN Fear & Greed/i, /^AAII Sentiment/i, /^Cboe Put\/Call/i, /^FRED Release /i];
     const FETCH_TIMEOUT_MS = 20000;
+    const FETCH_TIMEOUT_PROXY_MS = 35000;
     const FETCH_RETRIES = 2;
+    const MAX_CONCURRENT_PROXY_REQUESTS = 4;
+    const MAX_CONCURRENT_DIRECT_REQUESTS = 8;
+    const MACRO_ROW_KEYS = ["cpi", "coreCpi", "pce", "corePce", "payroll", "unemployment"];
+    const MACRO_REFRESH_HOURS = 24;
     const CORE_ROW_KEYS = [
       "vixCboe",
       "vixFred",
@@ -1077,6 +1174,26 @@
       return /network|fetch failed|timeout|timed out|ecconnreset|enotfound|eai_again|tls|socket|und_err/i.test(message);
     }
 
+    async function settleWithConcurrency(items, worker, limit) {
+      const total = Array.isArray(items) ? items.length : 0;
+      if (!total) return;
+      const size = Math.max(1, Math.min(limit, total));
+      let index = 0;
+      const runners = Array.from({ length: size }, async () => {
+        while (true) {
+          const current = index;
+          index += 1;
+          if (current >= total) break;
+          try {
+            await worker(items[current], current);
+          } catch {
+            // Keep parity with Promise.allSettled: continue remaining tasks.
+          }
+        }
+      });
+      await Promise.all(runners);
+    }
+
     function buildSourceHealth() {
       const completed = state.sources.filter((item) => item.status === "success" || item.status === "failed");
       const health = {
@@ -1098,6 +1215,21 @@
 
     function countCoreRowsAvailable() {
       return CORE_ROW_KEYS.filter((key) => Array.isArray(state.rows[key]) && state.rows[key].length > 0).length;
+    }
+
+    function snapshotFreshWithin(hours = MACRO_REFRESH_HOURS) {
+      const ts = Date.parse(String(state.snapshotGeneratedAt || ""));
+      if (!Number.isFinite(ts)) return false;
+      return (Date.now() - ts) <= hours * 60 * 60 * 1000;
+    }
+
+    function reusableMacroKeysFromSnapshot() {
+      if (!snapshotFreshWithin()) return new Set();
+      const reusable = new Set();
+      for (const key of MACRO_ROW_KEYS) {
+        if (Array.isArray(state.rows[key]) && state.rows[key].length) reusable.add(key);
+      }
+      return reusable;
     }
 
     function fillRowsFromSnapshot(snapshotRows, reason = "fallback") {
@@ -1212,12 +1344,13 @@
     async function fetchText(url, label) {
       const started = performance.now();
       const finalUrl = requestUrl(url);
+      const timeoutMs = state.proxyAvailable ? FETCH_TIMEOUT_PROXY_MS : FETCH_TIMEOUT_MS;
       logSource(label, "loading", "请求中", url, { code: "--", requestUrl: finalUrl });
       const attempts = FETCH_RETRIES + 1;
       let lastError;
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
         try {
           const res = await fetch(finalUrl, { cache: "no-store", signal: controller.signal });
           const text = await res.text();
@@ -1423,12 +1556,23 @@
         .replace(/'/g, "&#39;");
     }
 
-    async function loadFredSeries() {
-      const entries = Object.entries(FRED_SERIES);
-      await Promise.allSettled(entries.map(async ([key, [seriesId, label]]) => {
+    async function loadFredSeries(options = {}) {
+      const skipKeys = options.skipKeys instanceof Set ? options.skipKeys : new Set();
+      const entries = Object.entries(FRED_SERIES).filter(([key]) => !skipKeys.has(key));
+      const concurrency = state.proxyAvailable ? MAX_CONCURRENT_PROXY_REQUESTS : MAX_CONCURRENT_DIRECT_REQUESTS;
+      await settleWithConcurrency(entries, async ([key, [seriesId, label]]) => {
         const text = await fetchText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${seriesId}`, label);
         state.rows[key] = parseFredRows(text, seriesId);
-      }));
+      }, concurrency);
+      if (!skipKeys.size) return;
+      for (const key of skipKeys) {
+        const [, label] = FRED_SERIES[key] || [key, key];
+        const source = SOURCE_LINKS[key] || SNAPSHOT_URL;
+        logSource(`${label} (Snapshot Cache)`, "success", `reuse snapshot macro rows (${state.snapshotGeneratedAt || "unknown"})`, source, {
+          code: "SNAPSHOT_CACHE",
+          requestUrl: source
+        });
+      }
     }
 
     async function loadCboeVix() {
@@ -1450,7 +1594,10 @@
     }
 
     async function loadYahooSeries() {
-      await Promise.allSettled(YAHOO_SYMBOLS.map((symbol) => loadYahooSymbol(symbol)));
+      const concurrency = state.proxyAvailable ? MAX_CONCURRENT_PROXY_REQUESTS : MAX_CONCURRENT_DIRECT_REQUESTS;
+      await settleWithConcurrency(YAHOO_SYMBOLS, async (symbol) => {
+        await loadYahooSymbol(symbol);
+      }, concurrency);
     }
 
     function buildOptionsActivityFromPutCall() {
@@ -1934,6 +2081,76 @@
       $("missingList").innerHTML = pills.join("");
     }
 
+    function renderOptionsNotice() {
+      const target = $("optionsNotice");
+      if (!target) return;
+      const watch = state.metrics.optionsWatch;
+      if (!watch && !Object.keys(state.metrics).length) {
+        target.innerHTML = `<p class="empty">正在加载事件日历...</p>`;
+        return;
+      }
+      const horizonDays = Number.isFinite(Number(watch?.horizonDays)) ? Number(watch.horizonDays) : 14;
+      const metricEvents = Array.isArray(watch?.events) ? watch.events : [];
+      const eventMap = new Map(metricEvents.map((item) => [item?.id, item]));
+      const events = OPTIONS_NOTICE_TEMPLATES.map((template) => {
+        const fromMetric = eventMap.get(template.id) || {};
+        return {
+          id: template.id,
+          name: fromMetric.name || template.name,
+          impact: fromMetric.impact || template.impact,
+          nextDate: fromMetric.nextDate || null,
+          daysUntil: Number.isFinite(fromMetric.daysUntil) ? fromMetric.daysUntil : null,
+          withinTwoWeeks: Boolean(fromMetric.withinTwoWeeks),
+          note: fromMetric.note || null,
+          releaseName: fromMetric.releaseName || null,
+          releaseSource: fromMetric.releaseSource || null,
+          seriesSource: fromMetric.seriesSource || template.source
+        };
+      }).sort((a, b) => {
+        const aRank = Number.isFinite(a.daysUntil) ? (a.withinTwoWeeks ? 0 : 1) : 2;
+        const bRank = Number.isFinite(b.daysUntil) ? (b.withinTwoWeeks ? 0 : 1) : 2;
+        if (aRank !== bRank) return aRank - bRank;
+        if (Number.isFinite(a.daysUntil) && Number.isFinite(b.daysUntil)) return a.daysUntil - b.daysUntil;
+        return a.name.localeCompare(b.name, "zh-CN");
+      });
+
+      const nearCount = events.filter((item) => item.withinTwoWeeks).length;
+      const generatedText = watch?.generatedAt
+        ? ` · 日历更新时间 ${escapeHtml(String(watch.generatedAt).replace("T", " ").slice(0, 16))}`
+        : "";
+
+      target.innerHTML = `
+        <div class="optionsNoticeSummary">
+          <span>关注未来 ${horizonDays} 天可能触发期权隐含波动上升的宏观事件。${generatedText}</span>
+          <span class="pill ${nearCount ? "warn" : "ok"}">两周内重点事件 ${nearCount} 项</span>
+        </div>
+        <div class="optionsNoticeGrid">
+          ${events.map((item) => {
+            const daysText = Number.isFinite(item.daysUntil) ? `${item.daysUntil} 天后` : "未知";
+            const windowText = Number.isFinite(item.daysUntil) ? (item.withinTwoWeeks ? "是" : "否") : "未知";
+            const tagClass = windowText === "是" ? "warn" : windowText === "否" ? "ok" : "soft";
+            const sourceLinks = [
+              item.releaseSource ? `<a href="${escapeHtml(item.releaseSource)}" target="_blank" rel="noreferrer">发布日历</a>` : "",
+              item.seriesSource ? `<a href="${escapeHtml(item.seriesSource)}" target="_blank" rel="noreferrer">指标页</a>` : ""
+            ].filter(Boolean).join(" · ");
+            const statusText = windowText === "是" ? "两周内" : windowText === "否" ? "非两周内" : "待确认";
+            return `
+              <article class="noticeCard">
+                <div class="noticeHead">
+                  <h3 class="noticeTitle">${escapeHtml(item.name)}</h3>
+                  <span class="pill ${tagClass}">${statusText}</span>
+                </div>
+                <p class="noticeDate"><b>下次：</b>${escapeHtml(item.nextDate || "未获取")} · ${escapeHtml(daysText)}</p>
+                <p class="noticeImpact">${escapeHtml(item.impact)}</p>
+                <p class="noticeSources"><b>来源：</b>${sourceLinks || "无"}</p>
+                ${item.note ? `<p class="noticeNote"><b>备注：</b>${escapeHtml(item.note)}</p>` : ""}
+              </article>
+            `;
+          }).join("")}
+        </div>
+      `;
+    }
+
     function renderCurrentDataAnalysis(analysis) {
       const target = $("currentAnalysis");
       if (!target) return;
@@ -2114,6 +2331,7 @@
       renderMatchBars(analysis.results);
       renderMetrics();
       renderMissing();
+      renderOptionsNotice();
       renderCurrentDataAnalysis(analysis);
       renderSceneDetails();
       renderSourceDetails();
@@ -2135,47 +2353,59 @@
       state.snapshotGeneratedAt = null;
       state.requestMode = "direct";
       renderLog();
+      renderOptionsNotice();
       renderCurrentDataAnalysis(null);
       renderSceneDetails();
       renderSourceDetails();
       renderWeightControls();
       await checkProxyHealth();
 
-      if (location.protocol === "file:" && !state.proxyAvailable) {
-        const loaded = await loadEmbeddedSnapshotData();
-        renderProxyDiagnostic();
-        if (loaded) {
-          buildMetrics();
-          const analysis = analyze();
-          renderAll(analysis);
-          $("refreshBtn").disabled = false;
-          $("refreshBtn").textContent = "刷新数据";
-          return;
+      let snapshotLoaded = false;
+      if (!FORCE_DIRECT) {
+        if (location.protocol === "file:") {
+          snapshotLoaded = await loadEmbeddedSnapshotData();
+        } else {
+          snapshotLoaded = await loadSnapshotData();
+          if (!snapshotLoaded && EMBEDDED_SNAPSHOT) snapshotLoaded = await loadEmbeddedSnapshotData();
         }
-        if (!FORCE_DIRECT) {
-          $("refreshBtn").disabled = false;
-          $("refreshBtn").textContent = "刷新数据";
-          $("timestamp").textContent = "等待本地代理";
-          return;
+        renderProxyDiagnostic();
+        if (snapshotLoaded) {
+          buildMetrics();
+          const snapshotAnalysis = analyze();
+          renderAll(snapshotAnalysis);
+          $("timestamp").textContent = `已先展示快照（${state.snapshotGeneratedAt || "未知"}），正在尝试刷新实时数据`;
         }
       }
 
       if ((IS_GITHUB_PAGES && !state.proxyAvailable) || FORCE_SNAPSHOT) {
-        const loaded = await loadSnapshotData();
-        renderProxyDiagnostic();
-        if (loaded) {
-          buildMetrics();
-          const analysis = analyze();
-          renderAll(analysis);
-          $("refreshBtn").disabled = false;
-          $("refreshBtn").textContent = "刷新数据";
-          return;
-        }
+        $("refreshBtn").disabled = false;
+        $("refreshBtn").textContent = "刷新数据";
+        if (!snapshotLoaded) $("timestamp").textContent = "快照不可用";
+        return;
       }
+
+      if (location.protocol === "file:" && !state.proxyAvailable && !FORCE_DIRECT) {
+        $("refreshBtn").disabled = false;
+        $("refreshBtn").textContent = "刷新数据";
+        if (!snapshotLoaded && !FORCE_DIRECT) $("timestamp").textContent = "等待本地代理";
+        return;
+      }
+
+      if (snapshotLoaded) {
+        // Keep snapshot rows/metrics as baseline, but reset logs to reflect current live refresh.
+        state.sources = [];
+        state.missing = [];
+        state.sourceHealth = null;
+        renderLog();
+      }
+
+      state.requestMode = state.proxyAvailable ? "proxy" : "direct";
+      renderProxyDiagnostic();
+      const macroSkipKeys = (!FORCE_DIRECT && snapshotLoaded) ? reusableMacroKeysFromSnapshot() : new Set();
 
       const jobs = [
         loadCboeVix(),
-        loadFredSeries(),
+        loadFredSeries({ skipKeys: macroSkipKeys }),
         loadYahooSeries(),
         loadCboePutCall(),
         loadAaii(),
@@ -2223,6 +2453,7 @@
     });
     renderSceneDetails();
     renderSourceDetails();
+    renderOptionsNotice();
     renderCurrentDataAnalysis(null);
     renderWeightControls();
     initRepoLink();
