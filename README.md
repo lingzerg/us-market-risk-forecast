@@ -14,9 +14,12 @@
    - VIX：Cboe VIX 历史数据，FRED VIX 备用。
    - 指数：S&P 500、SPY。
    - 信用市场：HY OAS、IG OAS、HYG、JNK、LQD。
+   - 通胀数据：CPI、Core CPI、PCE、Core PCE（FRED）。
+   - 就业数据：非农就业（PAYEMS）、失业率（UNRATE）（FRED）。
    - 美元与金融压力：广义美元指数、NFCI、STLFSI4。
    - 情绪与宽度代理：CNN Fear & Greed、AAII、Cboe Put/Call、RSP/SPY。
    - 银行压力代理：XLF、KRE。
+   - 异常期权活动代理：Cboe Daily Put/Call 聚合指标（Total / Equity / Index）。
 
 2. 自动判断当前场景
    - 场景一：正常回调，可以正常定投。
@@ -26,7 +29,7 @@
    - 场景五：过度贪婪，考虑减仓。
 
 3. 展示当前指标
-   - 页面会展示 VIX、S&P 500 回撤、Fear & Greed、信用利差、美元、金融压力、HYG/JNK、银行 ETF、宽度代理、Put/Call、AAII 等数据。
+   - 页面会展示 VIX、S&P 500 回撤、Fear & Greed、信用利差、通胀（CPI/PCE）、就业（非农/失业率）、美元、金融压力、HYG/JNK、银行 ETF、宽度代理、Put/Call、AAII、异常期权活动等数据。
 
 4. 展示请求进度和错误状态
    - 每条请求都有 `loading`、`success`、`failed` 三种状态。
@@ -36,6 +39,8 @@
    - 会显示核心源/可选源健康度；实时抓取核心健康度过低时会自动用内置快照补齐核心缺项。
 
 5. 折叠说明区
+   - `当前数据的分析`：说明当前结论怎么得出、关键证据是什么、每个数据的含义。
+   - `当前数据的分析` 中新增“常用宏观数据（当前值与来源）”，直接给出通胀和就业指标的当前读数、指标代码与来源链接。
    - `五个场景说明`：解释每个场景的含义和操作倾向。
    - `数据来源`：列出每个场景依赖的数据来源。
    - `参数调整`：说明算法，并开放每条规则的权重。

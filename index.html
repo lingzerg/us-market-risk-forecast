@@ -531,6 +531,18 @@
       line-height: 1.65;
     }
 
+    .guideItem ul {
+      margin: 8px 0 0;
+      padding-left: 20px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .guideItem li {
+      margin: 4px 0;
+    }
+
     .weightGrid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -695,6 +707,16 @@
         </aside>
       </section>
 
+      <section class="panel">
+        <details class="accordionPanel">
+          <summary>
+            <span>当前数据的分析</span>
+            <span class="summaryMeta">折叠查看结论推导、关键证据与数据含义</span>
+          </summary>
+          <div class="accordionBody" id="currentAnalysis"></div>
+        </details>
+      </section>
+
       <section class="panel metrics">
         <h2>当前数据</h2>
         <div class="metricGrid" id="metricGrid"></div>
@@ -777,6 +799,12 @@
       dollar: "https://fred.stlouisfed.org/series/DTWEXBGS",
       nfci: "https://fred.stlouisfed.org/series/NFCI",
       stlfsi: "https://fred.stlouisfed.org/series/STLFSI4",
+      cpi: "https://fred.stlouisfed.org/series/CPIAUCSL",
+      coreCpi: "https://fred.stlouisfed.org/series/CPILFESL",
+      pce: "https://fred.stlouisfed.org/series/PCEPI",
+      corePce: "https://fred.stlouisfed.org/series/PCEPILFE",
+      payroll: "https://fred.stlouisfed.org/series/PAYEMS",
+      unemployment: "https://fred.stlouisfed.org/series/UNRATE",
       cboeStats: "https://www.cboe.com/us/options/market_statistics/daily/",
       aaii: "https://www.aaii.com/sentimentsurvey",
       yahoo: "https://finance.yahoo.com/",
@@ -914,10 +942,40 @@
       igOas: ["BAMLC0A0CM", "IG OAS"],
       dollar: ["DTWEXBGS", "广义美元"],
       nfci: ["NFCI", "NFCI"],
-      stlfsi: ["STLFSI4", "STLFSI4"]
+      stlfsi: ["STLFSI4", "STLFSI4"],
+      cpi: ["CPIAUCSL", "CPI"],
+      coreCpi: ["CPILFESL", "Core CPI"],
+      pce: ["PCEPI", "PCE"],
+      corePce: ["PCEPILFE", "Core PCE"],
+      payroll: ["PAYEMS", "Nonfarm Payrolls"],
+      unemployment: ["UNRATE", "Unemployment Rate"]
     };
 
     const YAHOO_SYMBOLS = ["SPY", "RSP", "HYG", "JNK", "LQD", "UUP", "XLF", "KRE"];
+    const OPTIONS_ACTIVITY_THRESHOLDS = {
+      totalLow: 0.55,
+      totalHigh: 1.05,
+      equityLow: 0.45,
+      equityHigh: 0.85,
+      indexLow: 0.9,
+      indexHigh: 1.8
+    };
+    const METRIC_EXPLAINERS = [
+      ["VIX", "市场预期波动率。越高通常代表避险情绪升温，>30 常见于恐慌期。"],
+      ["S&P 500 回撤", "指数相对近一年高点的跌幅。回撤越深，风险情绪越强。"],
+      ["Fear & Greed", "市场情绪温度计。低分偏恐惧，高分偏贪婪。"],
+      ["HY / IG OAS", "高收益/投资级信用利差。走阔往往意味着信用风险抬升。"],
+      ["CPI / Core CPI", "CPI 是整体通胀，Core CPI 剔除食品和能源，更能反映粘性通胀。"],
+      ["PCE / Core PCE", "美联储更关注的通胀口径。Core PCE 对政策路径影响较大。"],
+      ["非农就业（PAYEMS）", "美国非农岗位总量。月增速放缓通常对应增长降温。"],
+      ["失业率（UNRATE）", "劳动力市场松紧程度。上行通常提示需求走弱。"],
+      ["广义美元", "美元走强常与全球风险偏好下降同步。"],
+      ["NFCI / STLFSI4", "金融条件和压力指标。高于 0 往往偏紧。"],
+      ["HYG/JNK/XLF/KRE", "信用 ETF 与银行 ETF 的价格代理。连续走弱通常偏风险。"],
+      ["RSP-SPY 宽度代理", "等权相对市值权重的强弱，反映市场内部广度是否恶化。"],
+      ["Put/Call", "期权看跌看涨成交比。极端偏低/偏高常提示情绪过热或恐慌。"],
+      ["异常期权活动", "用 Cboe Total/Equity/Index Put/Call 的极端区间识别期权情绪异常。"]
+    ];
     const OPTIONAL_SOURCE_LABELS = new Set(["CNN Fear & Greed", "AAII Sentiment", "Cboe Put/Call"]);
     const OPTIONAL_SOURCE_MATCHERS = [/^CNN Fear & Greed/i, /^AAII Sentiment/i, /^Cboe Put\/Call/i];
     const FETCH_TIMEOUT_MS = 20000;
@@ -1334,6 +1392,37 @@
       return date || "--";
     }
 
+    function fmtSigned(value, digits = 2, suffix = "") {
+      if (!Number.isFinite(value)) return "--";
+      const fixed = Number(value).toFixed(digits);
+      const sign = value > 0 ? "+" : "";
+      return `${sign}${fixed}${suffix}`;
+    }
+
+    function fmtJobsDelta(value) {
+      if (!Number.isFinite(value)) return "--";
+      const rounded = Math.round(value);
+      const sign = rounded > 0 ? "+" : "";
+      return `${sign}${rounded.toLocaleString("en-US")}k`;
+    }
+
+    function sourceHost(url) {
+      try {
+        return new URL(url).hostname;
+      } catch {
+        return "source";
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
     async function loadFredSeries() {
       const entries = Object.entries(FRED_SERIES);
       await Promise.allSettled(entries.map(async ([key, [seriesId, label]]) => {
@@ -1362,6 +1451,41 @@
 
     async function loadYahooSeries() {
       await Promise.allSettled(YAHOO_SYMBOLS.map((symbol) => loadYahooSymbol(symbol)));
+    }
+
+    function buildOptionsActivityFromPutCall() {
+      const total = Number(state.metrics.putCall?.total);
+      const equity = Number(state.metrics.putCall?.equity);
+      const index = Number(state.metrics.putCall?.index);
+      if (![total, equity, index].some((value) => Number.isFinite(value))) {
+        state.metrics.optionsActivity = null;
+        return;
+      }
+
+      const alerts = [];
+      const check = (label, value, low, high) => {
+        if (!Number.isFinite(value)) return;
+        if (value >= high) {
+          alerts.push(`${label} ${fmt(value)} 偏高，常见于避险/对冲需求上升。`);
+          return;
+        }
+        if (value <= low) {
+          alerts.push(`${label} ${fmt(value)} 偏低，常见于投机情绪偏热。`);
+        }
+      };
+
+      check("总 Put/Call", total, OPTIONS_ACTIVITY_THRESHOLDS.totalLow, OPTIONS_ACTIVITY_THRESHOLDS.totalHigh);
+      check("Equity Put/Call", equity, OPTIONS_ACTIVITY_THRESHOLDS.equityLow, OPTIONS_ACTIVITY_THRESHOLDS.equityHigh);
+      check("Index Put/Call", index, OPTIONS_ACTIVITY_THRESHOLDS.indexLow, OPTIONS_ACTIVITY_THRESHOLDS.indexHigh);
+
+      state.metrics.optionsActivity = {
+        mode: "aggregate",
+        source: SOURCE_LINKS.cboeStats,
+        values: { total, equity, index },
+        thresholds: OPTIONS_ACTIVITY_THRESHOLDS,
+        unusualCount: alerts.length,
+        alerts
+      };
     }
 
     async function loadCboePutCall() {
@@ -1433,6 +1557,12 @@
       const dollarRows = state.rows.dollar?.length ? state.rows.dollar : state.rows.y_UUP;
       const nfciRows = state.rows.nfci;
       const stlfsiRows = state.rows.stlfsi;
+      const cpiRows = state.rows.cpi;
+      const coreCpiRows = state.rows.coreCpi;
+      const pceRows = state.rows.pce;
+      const corePceRows = state.rows.corePce;
+      const payrollRows = state.rows.payroll;
+      const unemploymentRows = state.rows.unemployment;
 
       const vix = latest(vixRows);
       const spx = latest(spxRows);
@@ -1441,6 +1571,12 @@
       const dollar = latest(dollarRows);
       const nfci = latest(nfciRows);
       const stlfsi = latest(stlfsiRows);
+      const cpi = latest(cpiRows);
+      const coreCpi = latest(coreCpiRows);
+      const pce = latest(pceRows);
+      const corePce = latest(corePceRows);
+      const payroll = latest(payrollRows);
+      const unemployment = latest(unemploymentRows);
 
       state.metrics.vix = {
         value: vix?.value,
@@ -1493,6 +1629,49 @@
         source: SOURCE_LINKS.stlfsi
       };
 
+      state.metrics.cpi = {
+        value: cpi?.value,
+        date: cpi?.date,
+        yoy: pctChange(cpiRows, 12),
+        source: SOURCE_LINKS.cpi
+      };
+
+      state.metrics.coreCpi = {
+        value: coreCpi?.value,
+        date: coreCpi?.date,
+        yoy: pctChange(coreCpiRows, 12),
+        source: SOURCE_LINKS.coreCpi
+      };
+
+      state.metrics.pce = {
+        value: pce?.value,
+        date: pce?.date,
+        yoy: pctChange(pceRows, 12),
+        source: SOURCE_LINKS.pce
+      };
+
+      state.metrics.corePce = {
+        value: corePce?.value,
+        date: corePce?.date,
+        yoy: pctChange(corePceRows, 12),
+        source: SOURCE_LINKS.corePce
+      };
+
+      state.metrics.payroll = {
+        value: payroll?.value,
+        date: payroll?.date,
+        change1m: pointChange(payrollRows, 1),
+        change12m: pctChange(payrollRows, 12),
+        source: SOURCE_LINKS.payroll
+      };
+
+      state.metrics.unemployment = {
+        value: unemployment?.value,
+        date: unemployment?.date,
+        change3m: pointChange(unemploymentRows, 3),
+        source: SOURCE_LINKS.unemployment
+      };
+
       for (const symbol of YAHOO_SYMBOLS) {
         const rows = state.rows[`y_${symbol}`];
         const row = latest(rows);
@@ -1514,6 +1693,7 @@
       };
 
       state.metrics.fearGreedProxy = buildFearGreedProxy();
+      buildOptionsActivityFromPutCall();
     }
 
     function buildFearGreedProxy() {
@@ -1695,6 +1875,12 @@
         ["Fear & Greed", fmt(state.metrics.cnnFearGreed?.value ?? state.metrics.fearGreedProxy?.value, 0), state.metrics.cnnFearGreed ? "CNN 原始值" : "页面自建代理分数", state.metrics.cnnFearGreed?.source || state.metrics.fearGreedProxy?.source],
         ["HY OAS", `${fmt(state.metrics.hyOas?.value)}%`, `20 日变化 ${fmt(state.metrics.hyOas?.change20d)}pct`, state.metrics.hyOas?.source],
         ["IG OAS", `${fmt(state.metrics.igOas?.value)}%`, `20 日变化 ${fmt(state.metrics.igOas?.change20d)}pct`, state.metrics.igOas?.source],
+        ["CPI 同比", fmtPct(state.metrics.cpi?.yoy), `${formatDate(state.metrics.cpi?.date)} · CPIAUCSL`, state.metrics.cpi?.source],
+        ["核心 CPI 同比", fmtPct(state.metrics.coreCpi?.yoy), `${formatDate(state.metrics.coreCpi?.date)} · CPILFESL`, state.metrics.coreCpi?.source],
+        ["PCE 同比", fmtPct(state.metrics.pce?.yoy), `${formatDate(state.metrics.pce?.date)} · PCEPI`, state.metrics.pce?.source],
+        ["核心 PCE 同比", fmtPct(state.metrics.corePce?.yoy), `${formatDate(state.metrics.corePce?.date)} · PCEPILFE`, state.metrics.corePce?.source],
+        ["非农就业", Number.isFinite(state.metrics.payroll?.value) ? `${Math.round(state.metrics.payroll.value).toLocaleString("en-US")}k` : "--", `${formatDate(state.metrics.payroll?.date)} · 月变动 ${fmtJobsDelta(state.metrics.payroll?.change1m)}`, state.metrics.payroll?.source],
+        ["失业率", Number.isFinite(state.metrics.unemployment?.value) ? `${fmt(state.metrics.unemployment.value, 1)}%` : "--", `${formatDate(state.metrics.unemployment?.date)} · 3 个月变化 ${fmtSigned(state.metrics.unemployment?.change3m, 2, "pct")}`, state.metrics.unemployment?.source],
         ["广义美元", fmt(state.metrics.dollar?.value), `20 日 ${fmtPct(state.metrics.dollar?.change20d)}`, state.metrics.dollar?.source],
         ["NFCI", fmt(state.metrics.nfci?.value, 3), `${formatDate(state.metrics.nfci?.date)} · 0 以上偏紧`, state.metrics.nfci?.source],
         ["STLFSI4", fmt(state.metrics.stlfsi?.value, 3), `${formatDate(state.metrics.stlfsi?.date)} · 0 以上偏紧`, state.metrics.stlfsi?.source],
@@ -1702,6 +1888,7 @@
         ["银行 ETF", `${fmtPct(state.metrics.XLF?.change20d)} / ${fmtPct(state.metrics.KRE?.change20d)}`, "XLF / KRE 20 日变化", SOURCE_LINKS.yahoo],
         ["宽度代理", fmtPct(state.metrics.breadthProxy?.value), "RSP 20 日 - SPY 20 日", SOURCE_LINKS.yahoo],
         ["Put/Call", fmt(state.metrics.putCall?.total), `Equity ${fmt(state.metrics.putCall?.equity)} · Index ${fmt(state.metrics.putCall?.index)}`, SOURCE_LINKS.cboeStats],
+        ["异常期权活动", state.metrics.optionsActivity ? `${state.metrics.optionsActivity.unusualCount} 条` : "--", state.metrics.optionsActivity ? `Total ${fmt(state.metrics.optionsActivity.values.total)} · Equity ${fmt(state.metrics.optionsActivity.values.equity)} · Index ${fmt(state.metrics.optionsActivity.values.index)}` : "缺省", SOURCE_LINKS.cboeStats],
         ["AAII Bearish", state.metrics.aaii ? `${fmt(state.metrics.aaii.bearish, 1)}%` : "--", state.metrics.aaii ? `${state.metrics.aaii.date} · Bullish ${fmt(state.metrics.aaii.bullish, 1)}%` : "缺省", SOURCE_LINKS.aaii]
       ];
       $("metricGrid").innerHTML = rows.map(([name, value, meta, source]) => `
@@ -1745,6 +1932,74 @@
         pills.push(`<span class="pill soft" title="${reason.replace(/"/g, "&quot;")}">${label}（可选）</span>`);
       });
       $("missingList").innerHTML = pills.join("");
+    }
+
+    function renderCurrentDataAnalysis(analysis) {
+      const target = $("currentAnalysis");
+      if (!target) return;
+      if (!analysis?.winner) {
+        target.innerHTML = `<p class="empty">正在等待数据加载，加载后将展示结论推导、关键证据和数据解释。</p>`;
+        return;
+      }
+
+      const winner = analysis.winner;
+      const confidencePct = Math.round((analysis.confidence || 0) * 100);
+      const passes = winner.evidence.filter((item) => item.status === "pass").slice(0, 5);
+      const fails = winner.evidence.filter((item) => item.status === "fail").slice(0, 5);
+      const missing = winner.evidence.filter((item) => item.status === "missing").slice(0, 5);
+      const coreHealth = Number.isFinite(state.sourceHealth?.core?.ratio)
+        ? `${Math.round(state.sourceHealth.core.ratio * 100)}%`
+        : "--";
+      const optionalHealth = Number.isFinite(state.sourceHealth?.optional?.ratio)
+        ? `${Math.round(state.sourceHealth.optional.ratio * 100)}%`
+        : "--";
+
+      const macroRows = [
+        { name: "CPI 同比", value: fmtPct(state.metrics.cpi?.yoy), detail: `${formatDate(state.metrics.cpi?.date)} · CPIAUCSL`, source: state.metrics.cpi?.source },
+        { name: "核心 CPI 同比", value: fmtPct(state.metrics.coreCpi?.yoy), detail: `${formatDate(state.metrics.coreCpi?.date)} · CPILFESL`, source: state.metrics.coreCpi?.source },
+        { name: "PCE 同比", value: fmtPct(state.metrics.pce?.yoy), detail: `${formatDate(state.metrics.pce?.date)} · PCEPI`, source: state.metrics.pce?.source },
+        { name: "核心 PCE 同比", value: fmtPct(state.metrics.corePce?.yoy), detail: `${formatDate(state.metrics.corePce?.date)} · PCEPILFE`, source: state.metrics.corePce?.source },
+        { name: "非农就业", value: Number.isFinite(state.metrics.payroll?.value) ? `${Math.round(state.metrics.payroll.value).toLocaleString("en-US")}k` : "--", detail: `${formatDate(state.metrics.payroll?.date)} · 月变动 ${fmtJobsDelta(state.metrics.payroll?.change1m)}`, source: state.metrics.payroll?.source },
+        { name: "失业率", value: Number.isFinite(state.metrics.unemployment?.value) ? `${fmt(state.metrics.unemployment.value, 1)}%` : "--", detail: `${formatDate(state.metrics.unemployment?.date)} · 3 个月变化 ${fmtSigned(state.metrics.unemployment?.change3m, 2, "pct")}`, source: state.metrics.unemployment?.source }
+      ];
+
+      const macroSection = `<ul>${macroRows.map((item) => `
+        <li><b>${escapeHtml(item.name)}：</b>${escapeHtml(item.value)}（${escapeHtml(item.detail)}）${item.source ? ` · <a href="${escapeHtml(item.source)}" target="_blank" rel="noreferrer">${escapeHtml(sourceHost(item.source))}</a>` : ""}</li>
+      `).join("")}</ul>`;
+
+      const optionAlerts = state.metrics.optionsActivity?.alerts || [];
+      const optionsSection = optionAlerts.length
+        ? `<ul>${optionAlerts.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+        : `<p>当前 Put/Call 聚合指标未出现极端异常。</p>`;
+
+      target.innerHTML = `
+        <div class="guideList">
+          <article class="guideItem">
+            <h3>结论如何推导</h3>
+            <p><b>当前结论：</b>${escapeHtml(winner.scene.name)}，置信度 ${confidencePct}%。</p>
+            <p><b>评分逻辑：</b>场景匹配度 = 已满足权重 / 可计算权重；最终置信度 = 场景匹配度 × 数据覆盖修正。</p>
+            <p><b>数据健康度：</b>核心源 ${coreHealth}，可选源 ${optionalHealth}。核心指标不足时会自动降级并回退快照补齐。</p>
+          </article>
+          <article class="guideItem">
+            <h3>关键证据</h3>
+            <p><b>支持当前结论：</b>${passes.map((item) => escapeHtml(item.label)).join("、") || "暂无"}</p>
+            <p><b>与当前结论冲突：</b>${fails.map((item) => escapeHtml(item.label)).join("、") || "暂无"}</p>
+            <p><b>缺失数据：</b>${missing.map((item) => escapeHtml(item.label)).join("、") || "暂无"}</p>
+            <p><b>异常期权活动：</b>使用 Cboe Daily Put/Call 聚合指标监控异常。阈值为 Total ≤ ${OPTIONS_ACTIVITY_THRESHOLDS.totalLow} 或 ≥ ${OPTIONS_ACTIVITY_THRESHOLDS.totalHigh}，Equity ≤ ${OPTIONS_ACTIVITY_THRESHOLDS.equityLow} 或 ≥ ${OPTIONS_ACTIVITY_THRESHOLDS.equityHigh}，Index ≤ ${OPTIONS_ACTIVITY_THRESHOLDS.indexLow} 或 ≥ ${OPTIONS_ACTIVITY_THRESHOLDS.indexHigh}。</p>
+            ${optionsSection}
+          </article>
+          <article class="guideItem">
+            <h3>每个数据的含义</h3>
+            <ul>
+              ${METRIC_EXPLAINERS.map(([name, meaning]) => `<li><b>${escapeHtml(name)}：</b>${escapeHtml(meaning)}</li>`).join("")}
+            </ul>
+          </article>
+          <article class="guideItem">
+            <h3>常用宏观数据（当前值与来源）</h3>
+            ${macroSection}
+          </article>
+        </div>
+      `;
     }
 
     function renderSceneDetails() {
@@ -1859,6 +2114,7 @@
       renderMatchBars(analysis.results);
       renderMetrics();
       renderMissing();
+      renderCurrentDataAnalysis(analysis);
       renderSceneDetails();
       renderSourceDetails();
       renderWeightControls();
@@ -1879,6 +2135,7 @@
       state.snapshotGeneratedAt = null;
       state.requestMode = "direct";
       renderLog();
+      renderCurrentDataAnalysis(null);
       renderSceneDetails();
       renderSourceDetails();
       renderWeightControls();
@@ -1966,6 +2223,7 @@
     });
     renderSceneDetails();
     renderSourceDetails();
+    renderCurrentDataAnalysis(null);
     renderWeightControls();
     initRepoLink();
     refresh();

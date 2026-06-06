@@ -17,6 +17,12 @@ const SOURCE_LINKS = {
   dollar: "https://fred.stlouisfed.org/series/DTWEXBGS",
   nfci: "https://fred.stlouisfed.org/series/NFCI",
   stlfsi: "https://fred.stlouisfed.org/series/STLFSI4",
+  cpi: "https://fred.stlouisfed.org/series/CPIAUCSL",
+  coreCpi: "https://fred.stlouisfed.org/series/CPILFESL",
+  pce: "https://fred.stlouisfed.org/series/PCEPI",
+  corePce: "https://fred.stlouisfed.org/series/PCEPILFE",
+  payroll: "https://fred.stlouisfed.org/series/PAYEMS",
+  unemployment: "https://fred.stlouisfed.org/series/UNRATE",
   cboeStats: "https://www.cboe.com/us/options/market_statistics/daily/",
   aaii: "https://www.aaii.com/sentimentsurvey",
   yahoo: "https://finance.yahoo.com/",
@@ -30,10 +36,24 @@ const FRED_SERIES = {
   igOas: ["BAMLC0A0CM", "IG OAS"],
   dollar: ["DTWEXBGS", "广义美元"],
   nfci: ["NFCI", "NFCI"],
-  stlfsi: ["STLFSI4", "STLFSI4"]
+  stlfsi: ["STLFSI4", "STLFSI4"],
+  cpi: ["CPIAUCSL", "CPI"],
+  coreCpi: ["CPILFESL", "Core CPI"],
+  pce: ["PCEPI", "PCE"],
+  corePce: ["PCEPILFE", "Core PCE"],
+  payroll: ["PAYEMS", "Nonfarm Payrolls"],
+  unemployment: ["UNRATE", "Unemployment Rate"]
 };
 
 const YAHOO_SYMBOLS = ["SPY", "RSP", "HYG", "JNK", "LQD", "UUP", "XLF", "KRE"];
+const OPTIONS_ACTIVITY_THRESHOLDS = {
+  totalLow: 0.55,
+  totalHigh: 1.05,
+  equityLow: 0.45,
+  equityHigh: 0.85,
+  indexLow: 0.9,
+  indexHigh: 1.8
+};
 const FETCH_TIMEOUT_MS = Number.isFinite(Number(process.env.FETCH_TIMEOUT_MS))
   ? Math.max(3000, Number(process.env.FETCH_TIMEOUT_MS))
   : 20000;
@@ -46,7 +66,7 @@ const REQUIRED_ROW_KEYS = [
   ...Object.keys(FRED_SERIES),
   ...YAHOO_SYMBOLS.map((symbol) => `y_${symbol}`)
 ];
-const STALE_METRIC_KEYS = ["putCall", "aaii", "cnnFearGreed"];
+const STALE_METRIC_KEYS = ["putCall", "aaii", "cnnFearGreed", "optionsActivity"];
 const OPTIONAL_SOURCE_MATCHERS = [/^CNN Fear & Greed/i, /^AAII Sentiment/i, /^Cboe Put\/Call/i];
 
 const rows = {};
@@ -233,6 +253,38 @@ async function loadYahooSeries() {
   await Promise.allSettled(YAHOO_SYMBOLS.map((symbol) => loadYahooSymbol(symbol)));
 }
 
+function buildOptionsActivityFromPutCall(putCall) {
+  const total = Number(putCall?.total);
+  const equity = Number(putCall?.equity);
+  const index = Number(putCall?.index);
+  if (![total, equity, index].some((value) => Number.isFinite(value))) return null;
+
+  const alerts = [];
+  const check = (label, value, low, high) => {
+    if (!Number.isFinite(value)) return;
+    if (value >= high) {
+      alerts.push(`${label} ${value.toFixed(2)} 偏高，常见于避险/对冲需求上升。`);
+      return;
+    }
+    if (value <= low) {
+      alerts.push(`${label} ${value.toFixed(2)} 偏低，常见于投机情绪偏热。`);
+    }
+  };
+
+  check("总 Put/Call", total, OPTIONS_ACTIVITY_THRESHOLDS.totalLow, OPTIONS_ACTIVITY_THRESHOLDS.totalHigh);
+  check("Equity Put/Call", equity, OPTIONS_ACTIVITY_THRESHOLDS.equityLow, OPTIONS_ACTIVITY_THRESHOLDS.equityHigh);
+  check("Index Put/Call", index, OPTIONS_ACTIVITY_THRESHOLDS.indexLow, OPTIONS_ACTIVITY_THRESHOLDS.indexHigh);
+
+  return {
+    mode: "aggregate",
+    source: SOURCE_LINKS.cboeStats,
+    values: { total, equity, index },
+    thresholds: OPTIONS_ACTIVITY_THRESHOLDS,
+    unusualCount: alerts.length,
+    alerts
+  };
+}
+
 async function loadCboePutCall() {
   const html = await fetchText(SOURCE_LINKS.cboeStats, "Cboe Put/Call");
   const text = stripTags(html);
@@ -369,6 +421,8 @@ await Promise.allSettled([
 ]);
 
 applyFallbackFromPrevious(previousSnapshot);
+const builtOptionsActivity = buildOptionsActivityFromPutCall(metrics.putCall);
+if (builtOptionsActivity) metrics.optionsActivity = builtOptionsActivity;
 validateRows();
 
 const snapshot = {
