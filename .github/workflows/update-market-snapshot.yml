@@ -3,7 +3,8 @@ name: Update market snapshot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 22 * * 1-5"
+    # GitHub cron uses UTC. This runs at 12:00 and 24:00 Asia/Hong_Kong.
+    - cron: "0 4,16 * * *"
 
 permissions:
   contents: write
