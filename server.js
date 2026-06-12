@@ -29,6 +29,22 @@ const MIME = {
   ".ico": "image/x-icon"
 };
 
+const UPSTREAM_TIMEOUT_MS = 30000;
+
+function upstreamHeaders(parsed) {
+  if (parsed.hostname === "fred.stlouisfed.org") {
+    return {
+      "User-Agent": "Mozilla/5.0",
+      "Accept": "text/csv,*/*"
+    };
+  }
+
+  return {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+    "Accept": "text/html,application/json,text/csv,text/plain,*/*"
+  };
+}
+
 function send(res, status, body, headers = {}) {
   res.writeHead(status, {
     "Access-Control-Allow-Origin": "*",
@@ -84,15 +100,12 @@ async function proxy(req, res) {
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
   try {
     const upstream = await fetch(target, {
       signal: controller.signal,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
-        "Accept": "text/html,application/json,text/csv,text/plain,*/*"
-      }
+      headers: upstreamHeaders(parsed)
     });
     const body = await upstream.text();
     const type = upstream.headers.get("content-type") || "text/plain; charset=utf-8";
@@ -103,7 +116,11 @@ async function proxy(req, res) {
     cache.set(target, { body, type, time: Date.now() });
     send(res, 200, body, { "Content-Type": type, "X-Proxy-Cache": "miss" });
   } catch (error) {
-    send(res, 502, `Proxy fetch failed: ${error.message}`, { "Content-Type": "text/plain; charset=utf-8" });
+    const status = error.name === "AbortError" ? 504 : 502;
+    const message = error.name === "AbortError"
+      ? `Proxy fetch timeout after ${UPSTREAM_TIMEOUT_MS}ms`
+      : `Proxy fetch failed: ${error.message}`;
+    send(res, status, message, { "Content-Type": "text/plain; charset=utf-8" });
   } finally {
     clearTimeout(timeout);
   }

@@ -1,6 +1,6 @@
 # Ignore generated snapshot data files
 /data/market-snapshot.json
 /data/market-snapshot.inline.js
-
+/data/
 # Local secrets
 .env.local

@@ -1223,10 +1223,10 @@
       return (Date.now() - ts) <= hours * 60 * 60 * 1000;
     }
 
-    function reusableMacroKeysFromSnapshot() {
+    function reusableFredKeysFromSnapshot() {
       if (!snapshotFreshWithin()) return new Set();
       const reusable = new Set();
-      for (const key of MACRO_ROW_KEYS) {
+      for (const key of Object.keys(FRED_SERIES)) {
         if (Array.isArray(state.rows[key]) && state.rows[key].length) reusable.add(key);
       }
       return reusable;
@@ -1568,7 +1568,7 @@
       for (const key of skipKeys) {
         const [, label] = FRED_SERIES[key] || [key, key];
         const source = SOURCE_LINKS[key] || SNAPSHOT_URL;
-        logSource(`${label} (Snapshot Cache)`, "success", `reuse snapshot macro rows (${state.snapshotGeneratedAt || "unknown"})`, source, {
+        logSource(`${label} (Snapshot Cache)`, "success", `reuse snapshot FRED rows (${state.snapshotGeneratedAt || "unknown"})`, source, {
           code: "SNAPSHOT_CACHE",
           requestUrl: source
         });
@@ -2401,11 +2401,11 @@
 
       state.requestMode = state.proxyAvailable ? "proxy" : "direct";
       renderProxyDiagnostic();
-      const macroSkipKeys = (!FORCE_DIRECT && snapshotLoaded) ? reusableMacroKeysFromSnapshot() : new Set();
+      const fredSkipKeys = (!FORCE_DIRECT && snapshotLoaded) ? reusableFredKeysFromSnapshot() : new Set();
 
       const jobs = [
         loadCboeVix(),
-        loadFredSeries({ skipKeys: macroSkipKeys }),
+        loadFredSeries({ skipKeys: fredSkipKeys }),
         loadYahooSeries(),
         loadCboePutCall(),
         loadAaii(),
