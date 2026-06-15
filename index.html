@@ -134,6 +134,11 @@
       display: grid;
       grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
       gap: 18px;
+    }
+
+    main {
+      display: grid;
+      gap: 22px;
       margin-top: 18px;
     }
 
@@ -226,6 +231,54 @@
       gap: 10px;
     }
 
+    .directionSummary {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfcfa;
+      display: grid;
+      gap: 10px;
+    }
+
+    .directionHead {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .directionHead b {
+      font-size: 16px;
+    }
+
+    .directionScore {
+      font-weight: 760;
+      color: var(--muted);
+    }
+
+    .directionSummary p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .directionChips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .directionChip {
+      border: 1px solid #cfd7d1;
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 12px;
+      background: #fff;
+      color: var(--muted);
+    }
+
     .evidenceItem {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -285,12 +338,10 @@
     .metrics,
     .missing,
     .log {
-      margin-top: 18px;
       padding: 18px;
     }
 
     .optionsNoticePanel {
-      margin-top: 18px;
       padding: 18px;
     }
 
@@ -363,7 +414,6 @@
     .accordions {
       display: grid;
       gap: 12px;
-      margin-top: 18px;
     }
 
     .accordionPanel {
@@ -777,6 +827,13 @@
               </div>
             </div>
           </div>
+          <div class="directionSummary" id="directionSummary">
+            <div class="directionHead">
+              <b>近 5 个有效交易日趋向：计算中</b>
+              <span class="directionScore">--</span>
+            </div>
+            <p>等待历史数据加载。</p>
+          </div>
           <div class="evidence" id="evidence"></div>
         </article>
 
@@ -791,15 +848,13 @@
         <div id="optionsNotice"></div>
       </section>
 
-      <section class="panel">
-        <details class="accordionPanel">
-          <summary>
-            <span>当前数据的分析</span>
-            <span class="summaryMeta">折叠查看结论推导、关键证据与数据含义</span>
-          </summary>
-          <div class="accordionBody" id="currentAnalysis"></div>
-        </details>
-      </section>
+      <details class="panel accordionPanel">
+        <summary>
+          <span>当前数据的分析</span>
+          <span class="summaryMeta">折叠查看结论推导、关键证据与数据含义</span>
+        </summary>
+        <div class="accordionBody" id="currentAnalysis"></div>
+      </details>
 
       <section class="panel metrics">
         <h2>当前数据</h2>
@@ -1965,6 +2020,166 @@
       return { sceneId, points, possible, score, evidence, missing };
     }
 
+    function recentValidRows(rows, count = 5) {
+      return tail((rows || []).filter((row) => row?.date && Number.isFinite(row.value)), count);
+    }
+
+    function recentDateWindow(rows, periods = 4) {
+      const recent = recentValidRows(rows, periods + 1);
+      return recent.map((row) => row.date);
+    }
+
+    function addDirectionSignal(signals, options) {
+      const {
+        label,
+        rows,
+        periods = 4,
+        mode = "pct",
+        optimisticWhen = "up",
+        scale = 0.03,
+        weight = 1,
+        detailSuffix = ""
+      } = options;
+      const recent = recentValidRows(rows, periods + 1);
+      if (recent.length < periods + 1) return;
+      const first = recent[0]?.value;
+      const last = recent[recent.length - 1]?.value;
+      if (!Number.isFinite(first) || !Number.isFinite(last) || first === 0) return;
+      const change = mode === "point" ? last - first : (last / first) - 1;
+      const directionChange = optimisticWhen === "down" ? -change : change;
+      const normalized = clamp(directionChange / scale, -1, 1);
+      signals.push({
+        label,
+        change,
+        mode,
+        score: normalized * weight,
+        weight,
+        dates: recent.map((row) => row.date),
+        detail: mode === "point" ? fmtSigned(change, 2, detailSuffix || "pt") : `${fmtPct(change)}${detailSuffix}`
+      });
+    }
+
+    function buildDirectionAnalysis() {
+      const signals = [];
+      const vixRows = state.rows.vixCboe?.length ? state.rows.vixCboe : state.rows.vixFred;
+      const spxRows = state.rows.sp500?.length ? state.rows.sp500 : state.rows.y_SPY;
+      const dollarRows = state.rows.dollar?.length ? state.rows.dollar : state.rows.y_UUP;
+
+      addDirectionSignal(signals, {
+        label: "VIX",
+        rows: vixRows,
+        mode: "point",
+        optimisticWhen: "down",
+        scale: 5,
+        weight: 1.25
+      });
+      addDirectionSignal(signals, {
+        label: "S&P 500/SPY",
+        rows: spxRows,
+        optimisticWhen: "up",
+        scale: 0.035,
+        weight: 1.25
+      });
+      addDirectionSignal(signals, {
+        label: "HY OAS",
+        rows: state.rows.hyOas,
+        mode: "point",
+        optimisticWhen: "down",
+        scale: 0.35,
+        weight: 1.05,
+        detailSuffix: "pct"
+      });
+      addDirectionSignal(signals, {
+        label: "HYG",
+        rows: state.rows.y_HYG,
+        optimisticWhen: "up",
+        scale: 0.025,
+        weight: 0.75
+      });
+      addDirectionSignal(signals, {
+        label: "JNK",
+        rows: state.rows.y_JNK,
+        optimisticWhen: "up",
+        scale: 0.025,
+        weight: 0.75
+      });
+      addDirectionSignal(signals, {
+        label: "美元/UUP",
+        rows: dollarRows,
+        optimisticWhen: "down",
+        scale: 0.02,
+        weight: 0.8
+      });
+      addDirectionSignal(signals, {
+        label: "银行 ETF/XLF",
+        rows: state.rows.y_XLF,
+        optimisticWhen: "up",
+        scale: 0.035,
+        weight: 0.7
+      });
+      addDirectionSignal(signals, {
+        label: "地区银行/KRE",
+        rows: state.rows.y_KRE,
+        optimisticWhen: "up",
+        scale: 0.045,
+        weight: 0.7
+      });
+
+      const rsp5 = pctChange(state.rows.y_RSP, 4);
+      const spy5 = pctChange(state.rows.y_SPY, 4);
+      if (Number.isFinite(rsp5) && Number.isFinite(spy5)) {
+        const breadthChange = rsp5 - spy5;
+        signals.push({
+          label: "市场宽度 RSP-SPY",
+          change: breadthChange,
+          mode: "pct",
+          score: clamp(breadthChange / 0.018, -1, 1) * 0.95,
+          weight: 0.95,
+          dates: recentDateWindow(state.rows.y_SPY, 4),
+          detail: fmtPct(breadthChange)
+        });
+      }
+
+      const possible = signals.reduce((sum, item) => sum + item.weight, 0);
+      const raw = possible ? signals.reduce((sum, item) => sum + item.score, 0) / possible : 0;
+      const score = Math.round(clamp(raw, -1, 1) * 100);
+      const dates = recentDateWindow(spxRows, 4);
+      const positive = signals.filter((item) => item.score > 0.12).sort((a, b) => b.score - a.score);
+      const negative = signals.filter((item) => item.score < -0.12).sort((a, b) => a.score - b.score);
+      const top = [...positive.slice(0, 3), ...negative.slice(0, 3)].slice(0, 5);
+
+      let label = "方向不明确";
+      if (score >= 35) label = "风险偏好明显升温，偏乐观";
+      else if (score >= 12) label = "风险偏好小幅升温，偏乐观";
+      else if (score <= -35) label = "避险明显升温，偏悲观";
+      else if (score <= -12) label = "风险偏好降温，偏悲观";
+
+      const fng = state.metrics.cnnFearGreed?.value ?? state.metrics.fearGreedProxy?.value;
+      const overheating =
+        score > 12 &&
+        (
+          state.metrics.vix?.value < 15 ||
+          Number(fng) >= 70 ||
+          state.metrics.breadthProxy?.value <= -0.015 ||
+          state.metrics.putCall?.total < 0.75
+        );
+      const riskOff =
+        score < -12 &&
+        (
+          state.metrics.vix?.value >= 25 ||
+          state.metrics.hyOas?.change20d > 0.35 ||
+          state.metrics.dollar?.change20d > 0.02 ||
+          state.metrics.KRE?.change20d < -0.05
+        );
+      const excess = overheating
+        ? "偏乐观，但存在过热/宽度分化迹象"
+        : riskOff
+          ? "偏悲观，避险或信用压力在升温"
+          : "暂未显示明显过度方向";
+
+      return { score, label, excess, dates, signals, top };
+    }
+
     function analyze() {
       const results = SCENES.map((scene) => ({ ...scoreScene(scene.id), scene }));
       results.sort((a, b) => b.score - a.score);
@@ -1977,6 +2192,7 @@
     function renderDecision(analysis) {
       const { winner, confidence } = analysis;
       const scene = winner.scene;
+      const direction = buildDirectionAnalysis();
       const confidenceHint = confidence < 0.5 ? "低置信度最接近" : confidence < 0.7 ? "中等置信度" : "高置信度";
       $("scenarioLabel").textContent = `${scene.short} · ${confidenceHint}`;
       $("scenarioLabel").style.color = scene.color;
@@ -1987,6 +2203,7 @@
       $("scoreDial").style.setProperty("--score", Math.round(confidence * 100));
       $("scoreDial").style.background = `conic-gradient(${scene.color} ${Math.round(confidence * 100)}%, #e7ebe7 0), #fff`;
       $("scoreValue").textContent = `${Math.round(confidence * 100)}%`;
+      renderDirectionSummary(direction);
 
       const goodEvidence = winner.evidence
         .filter((item) => item.status !== "missing")
@@ -1997,6 +2214,35 @@
           <span>${item.detail || ""}</span>
         </div>
       `).join("") || `<p class="empty">没有足够数据生成依据。</p>`;
+    }
+
+    function renderDirectionSummary(direction) {
+      const box = $("directionSummary");
+      if (!direction || direction.signals.length < 3) {
+        box.innerHTML = `
+          <div class="directionHead">
+            <b>近 5 个有效交易日趋向：数据不足</b>
+            <span class="directionScore">--</span>
+          </div>
+          <p>至少需要 3 个可计算历史序列，才显示短期风险偏好方向。</p>
+        `;
+        return;
+      }
+
+      const color = direction.score >= 12 ? "var(--green)" : direction.score <= -12 ? "var(--red)" : "var(--muted)";
+      const dateText = direction.dates.length ? direction.dates.join(", ") : "有效交易日不足";
+      const chips = direction.top.map((item) => `
+        <span class="directionChip">${escapeHtml(item.label)} ${escapeHtml(item.detail)}</span>
+      `).join("");
+      box.innerHTML = `
+        <div class="directionHead">
+          <b>近 5 个有效交易日趋向：${escapeHtml(direction.label)}</b>
+          <span class="directionScore" style="color:${color}">${direction.score > 0 ? "+" : ""}${direction.score}</span>
+        </div>
+        <p><b>过度方向：</b>${escapeHtml(direction.excess)}</p>
+        <p><b>有效日期：</b>${escapeHtml(dateText)}</p>
+        <div class="directionChips">${chips || `<span class="directionChip">核心指标分歧较大</span>`}</div>
+      `;
     }
 
     function renderMatchBars(results) {
