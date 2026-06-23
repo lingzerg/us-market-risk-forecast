@@ -337,16 +337,19 @@ async function loadCboeVix() {
 }
 
 async function loadYahooSymbol(symbol) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1y&interval=1d`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1y&interval=1d&events=history`;
   const text = await fetchText(url, `Yahoo ${symbol}`);
   const data = JSON.parse(text);
   const result = data.chart?.result?.[0];
   const times = result?.timestamp || [];
   const closes = result?.indicators?.quote?.[0]?.close || [];
-  rows[`y_${symbol}`] = times.map((time, i) => ({
-    date: new Date(time * 1000).toISOString().slice(0, 10),
-    value: Number(closes[i])
-  })).filter((row) => row.date && Number.isFinite(row.value));
+  rows[`y_${symbol}`] = times.map((time, i) => {
+    const rawValue = closes[i];
+    return {
+      date: new Date(time * 1000).toISOString().slice(0, 10),
+      value: typeof rawValue === "number" && Number.isFinite(rawValue) ? rawValue : null
+    };
+  }).filter((row) => row.date && Number.isFinite(row.value));
 }
 
 async function loadYahooSeries() {
