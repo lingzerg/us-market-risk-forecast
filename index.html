@@ -1330,7 +1330,7 @@
       const box = $("proxyDiagnostic");
       if (!box) return;
       if (state.requestMode === "proxy+fallback" || state.requestMode === "direct+fallback") {
-        box.textContent = `实时抓取健康度偏低，已自动使用 ${EMBEDDED_SNAPSHOT_URL} 补齐缺失核心数据（快照时间：${state.snapshotGeneratedAt || "未知"}）。`;
+        box.textContent = `实时抓取健康度偏低，已自动使用 ${EMBEDDED_SNAPSHOT_URL} 补齐缺失核心数据（快照时间：${formatHongKongDateTime(state.snapshotGeneratedAt)}）。`;
         return;
       }
       if (state.proxyAvailable && location.protocol === "file:") {
@@ -1342,7 +1342,7 @@
         return;
       }
       if (state.requestMode === "embedded") {
-        box.textContent = `当前是双击 file:// 打开，未检测到本地代理，已使用仓库内置快照 ${EMBEDDED_SNAPSHOT_URL}（生成时间：${state.snapshotGeneratedAt || "未知"}）。如需实时数据请运行 node server.js 后打开 http://localhost:8010。`;
+        box.textContent = `当前是双击 file:// 打开，未检测到本地代理，已使用仓库内置快照 ${EMBEDDED_SNAPSHOT_URL}（生成时间：${formatHongKongDateTime(state.snapshotGeneratedAt)}）。如需实时数据请运行 node server.js 后打开 http://localhost:8010。`;
         return;
       }
       if (location.protocol === "file:") {
@@ -1351,7 +1351,7 @@
       }
       if (location.hostname.endsWith("github.io")) {
         box.textContent = state.requestMode === "snapshot"
-          ? `当前运行在 GitHub Pages 静态快照模式。数据来自仓库内 data/market-snapshot.json，生成时间：${state.snapshotGeneratedAt || "未知"}。`
+          ? `当前运行在 GitHub Pages 静态快照模式。数据来自仓库内 data/market-snapshot.json，生成时间：${formatHongKongDateTime(state.snapshotGeneratedAt)}。`
           : "当前运行在 GitHub Pages 静态模式。GitHub Pages 不能运行 server.js；如果没有可用快照，浏览器直连公开数据源时可能被 CORS 拦截。";
         return;
       }
@@ -1580,6 +1580,23 @@
       return date || "--";
     }
 
+    function formatHongKongDateTime(value) {
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return "未知";
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Hong_Kong",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23"
+      }).formatToParts(date);
+      const part = (type) => parts.find((item) => item.type === type)?.value || "--";
+      return `香港时间 ${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`;
+    }
+
     function fmtSigned(value, digits = 2, suffix = "") {
       if (!Number.isFinite(value)) return "--";
       const fixed = Number(value).toFixed(digits);
@@ -1623,7 +1640,7 @@
       for (const key of skipKeys) {
         const [, label] = FRED_SERIES[key] || [key, key];
         const source = SOURCE_LINKS[key] || SNAPSHOT_URL;
-        logSource(`${label} (Snapshot Cache)`, "success", `reuse snapshot FRED rows (${state.snapshotGeneratedAt || "unknown"})`, source, {
+        logSource(`${label} (Snapshot Cache)`, "success", `reuse snapshot FRED rows (${formatHongKongDateTime(state.snapshotGeneratedAt)})`, source, {
           code: "SNAPSHOT_CACHE",
           requestUrl: source
         });
@@ -2365,7 +2382,7 @@
 
       const nearCount = events.filter((item) => item.withinTwoWeeks).length;
       const generatedText = watch?.generatedAt
-        ? ` · 日历更新时间 ${escapeHtml(String(watch.generatedAt).replace("T", " ").slice(0, 16))}`
+        ? ` · 日历更新时间 ${escapeHtml(formatHongKongDateTime(watch.generatedAt))}`
         : "";
 
       target.innerHTML = `
@@ -2622,7 +2639,7 @@
           buildMetrics();
           const snapshotAnalysis = analyze();
           renderAll(snapshotAnalysis);
-          $("timestamp").textContent = `已先展示快照（${state.snapshotGeneratedAt || "未知"}），正在尝试刷新实时数据`;
+          $("timestamp").textContent = `已先展示快照（${formatHongKongDateTime(state.snapshotGeneratedAt)}），正在尝试刷新实时数据`;
         }
       }
 
