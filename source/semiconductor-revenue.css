@@ -1,0 +1,41 @@
+#semiconductor-two-years {position:relative;}
+#semiconductor-two-years .legend {display:flex;flex-wrap:wrap;gap:6px 18px;margin:16px 0 4px;}
+#semiconductor-two-years .legend button {display:flex;align-items:center;gap:6px;background:transparent;border:0;padding:4px 0;color:var(--foreground);font:inherit;}
+#semiconductor-two-years .legend button[aria-pressed="false"] {opacity:.45;text-decoration:line-through;}
+#semiconductor-two-years .swatch {display:inline-block;width:24px;height:0;border-top:3px solid;}
+#semiconductor-two-years .line-chart {display:block;width:100%;}
+#semiconductor-two-years .line-chart text {fill:var(--foreground);font-size:12px;font-weight:400;}
+#semiconductor-two-years .line-chart .domain,#semiconductor-two-years .line-chart .tick line {stroke:var(--border);}
+#semiconductor-two-years details {margin-top:16px;}
+#semiconductor-two-years .company-note {margin-top:8px;}
+#semiconductor-two-years .source-links {display:flex;flex-direction:column;gap:8px;margin:12px 0;}
+#semiconductor-two-years .tooltip {position:absolute;pointer-events:none;z-index:5;background:var(--popover);color:var(--popover-foreground);padding:10px;max-width:260px;}
+#semiconductor-two-years .tooltip[hidden] {display:none;}
+
+#semiconductor-two-years {
+  padding:22px; min-width:0;
+  --background:var(--panel); --foreground:var(--ink); --border:var(--line);
+  --muted-foreground:var(--muted); --popover:var(--panel); --popover-foreground:var(--ink);
+  --viz-series-1:var(--blue); --viz-series-2:var(--orange); --viz-series-3:var(--green);
+}
+#semiconductor-two-years h2 {margin:0 0 8px;font-size:20px;}
+#semiconductor-two-years .snapshot-label {margin:0 0 18px;color:var(--muted);font-size:13px;}
+#semiconductor-two-years .viz-controls {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:12px;}
+#semiconductor-two-years .form-label {display:grid;gap:6px;font-size:14px;}
+#semiconductor-two-years select {width:100%;min-height:42px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font:inherit;padding:8px;}
+#semiconductor-two-years .text-small {font-size:13px;line-height:1.6;}
+#semiconductor-two-years .text-muted {color:var(--muted);}
+#semiconductor-two-years .table-responsive {overflow-x:auto;max-width:100%;margin:10px 0;}
+#semiconductor-two-years .table {width:100%;border-collapse:collapse;font-size:13px;line-height:1.5;}
+#semiconductor-two-years .table th,#semiconductor-two-years .table td {padding:9px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;}
+#semiconductor-two-years .table .text-end {text-align:right;font-variant-numeric:tabular-nums;}
+#semiconductor-two-years .table th {font-weight:600;}
+#semiconductor-two-years .values td:first-child,#semiconductor-two-years .values td:nth-child(2) {white-space:nowrap;}
+#semiconductor-two-years .source-links a {overflow-wrap:anywhere;font-size:13px;}
+#semiconductor-two-years .tooltip {border:1px solid var(--line);border-radius:6px;box-shadow:var(--shadow);font-size:13px;line-height:1.6;}
+@media (max-width:620px) {
+  #semiconductor-two-years {padding:14px;}
+  #semiconductor-two-years .viz-controls {grid-template-columns:1fr;}
+  #semiconductor-two-years select {font-size:16px;}
+  #semiconductor-two-years .legend {gap:4px 12px;font-size:13px;}
+}

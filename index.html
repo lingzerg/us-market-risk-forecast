@@ -7,6 +7,10 @@
   <link rel="icon" type="image/svg+xml" href="source/favicon.svg?v=2" />
   <link rel="icon" type="image/png" href="source/icon.png?v=2" />
   <link rel="shortcut icon" href="source/icon.png?v=2" />
+  <link rel="stylesheet" href="source/semiconductor-revenue.css" />
+  <script defer src="source/vendor/d3.v7.9.0.min.js"></script>
+  <script defer src="source/semiconductor-revenue-data.js"></script>
+  <script defer src="source/semiconductor-revenue.js"></script>
   <style>
     :root {
       --bg: #f6f7f4;
@@ -841,6 +845,32 @@
           <h2>五个场景匹配度</h2>
           <div id="matchBars"></div>
         </aside>
+      </section>
+
+      <section class="panel" id="semiconductor-two-years" aria-labelledby="semiconductor-heading">
+        <h2 id="semiconductor-heading">半导体企业：两年营收与增长趋势</h2>
+        <p class="snapshot-label">静态财报数据 · 截至 2026-10-14 · 独立于上方宏观数据刷新</p>
+        <p class="chart-status" role="status">正在加载营收图表…</p>
+        <noscript>启用 JavaScript 后可切换企业并查看营收曲线。</noscript>
+        <div class="viz-controls">
+          <label class="form-label" for="semi-company">企业<select class="form-select" id="semi-company"></select></label>
+          <label class="form-label" for="semi-mode">变化口径<select class="form-select" id="semi-mode"><option value="qoq">环比增长率与增速变化</option><option value="yoy">同比增长率与增速变化</option><option value="difference" selected>营收一阶差分与二阶差分</option></select></label>
+        </div>
+        <div class="period text-small" aria-live="polite"></div>
+        <div class="legend" aria-label="曲线图例"></div>
+        <div class="plot"></div>
+        <div class="axis-note text-small text-muted"></div>
+        <div class="company-note text-small text-muted"></div>
+        <details><summary>最近八季数值与计算口径</summary><div class="table-responsive"><table class="table table-sm tabular-nums"><thead><tr><th>财报季度</th><th>截止月份</th><th class="text-end revenue-head"></th><th class="text-end rate-head"></th><th class="text-end accel-head"></th><th>状态</th></tr></thead><tbody class="values"></tbody></table></div>
+          <div class="text-small text-muted">环比 = 本季营收 ÷ 上季营收 − 1；同比 = 本季营收 ÷ 去年同季营收 − 1。增速变化 = 本季增长率 − 上季增长率，单位为百分点。一阶差分 = 本季营收 − 上季营收；二阶差分 = 本季营收 − 2 × 上季营收 + 上上季营收，以一季为时间步长。</div>
+        </details>
+        <details><summary>数据来源、基数与缺失处理</summary>
+          <div class="text-small text-muted">采集日期：2026-10-14。公司财报公告与 Stock Analysis 历史季度表；不是富途 SDK。新增企业的历史序列取自 Stock Analysis，并用公司官方财报核对最近季度及部分历史比较值。未逐项核对所有历史报表原件。</div>
+          <div class="source-links"></div>
+          <div class="table-responsive"><table class="table table-sm tabular-nums"><thead><tr><th>财报季度</th><th>截止月份</th><th class="text-end raw-head"></th><th>数据来源</th></tr></thead><tbody class="source-values"></tbody></table></div>
+          <div class="text-small text-muted">显示最近八个正式财报季度；额外五季只用于同比及增速变化的基数。缺失营收显示为 0，并以空心方块和“缺失补 0”标记，不代表真实营收为零；凡计算涉及缺失值或分母为零，增长率与相应差分留空。横轴按财报季度等距排列，并标出实际截止月份；折线之间仅作线性连接。此 HTML 是固定数据快照，不会自动刷新。</div>
+        </details>
+        <div class="tooltip" role="tooltip" hidden></div>
       </section>
 
       <section class="panel optionsNoticePanel">
