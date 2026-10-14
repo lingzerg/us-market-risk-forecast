@@ -7,34 +7,32 @@
   return;
  }
  companySelect.innerHTML=dataset.companies.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
- const modes={qoq:{keys:['qoq','aq'],names:['环比增长率','环比增速变化'],units:['%','百分点']},yoy:{keys:['yoy','ay'],names:['同比增长率','同比增速变化'],units:['%','百分点']},difference:{keys:['d1','d2'],names:['一阶差分','二阶差分']}};
+ const modes={qoq:{keys:['qoq','aq'],names:['环比增长率','环比增速变化'],units:['%','百分点']},yoy:{keys:['yoy','ay'],names:['同比增长率','同比增速变化'],units:['%','百分点']}};
  const visible=[true,true,true],finite=v=>typeof v==='number'&&Number.isFinite(v),format=(v,s=false)=>finite(v)?(s&&v>0?'+':'')+v.toFixed(2):'—';
  // Keep missing observations null for every calculation; zero is display-only.
  function prepare(c){
   const n=Math.max(13,c.revenues.length),offset=n-c.revenues.length,rows=[];
   for(let i=0;i<n;i++){
    const j=i-offset,qIndex=c.startYear*4+c.startQuarter-1+j,year=Math.floor(qIndex/4),quarter=qIndex%4+1;
-   const raw=j<0?null:c.revenues[j],r=finite(raw)?raw:null,prev=rows[i-1],prior=rows[i-4],prev2=rows[i-2];
+   const raw=j<0?null:c.revenues[j],r=finite(raw)?raw:null,prev=rows[i-1],prior=rows[i-4];
    const row={q:`${c.fiscal?'FY':''}${year} Q${quarter}`,end:c.ends[j]||'未知',raw:r,rev:r===null?0:r/c.divisor,missing:r===null,source:c.sourceRefs?.[j]??0};
    row.qoq=r!==null&&finite(prev?.raw)&&prev.raw!==0?100*(r/prev.raw-1):null;
    row.yoy=r!==null&&finite(prior?.raw)&&prior.raw!==0?100*(r/prior.raw-1):null;
    row.aq=finite(row.qoq)&&finite(prev?.qoq)?row.qoq-prev.qoq:null;
    row.ay=finite(row.yoy)&&finite(prev?.yoy)?row.yoy-prev.yoy:null;
-   row.d1=r!==null&&finite(prev?.raw)?(r-prev.raw)/c.divisor:null;
-   row.d2=r!==null&&finite(prev?.raw)&&finite(prev2?.raw)?(r-2*prev.raw+prev2.raw)/c.divisor:null;
    rows.push(row);
   }
   return {all:rows,data:rows.slice(-8).map((d,x)=>({...d,x}))};
  }
  const svg=d3.select(plot).append('svg').attr('class','line-chart').attr('role','img');
  const colors=['var(--viz-series-1)','var(--viz-series-2)','var(--viz-series-3)'],dashes=[null,'7 4','2 4'];
- function restore(state){const s=state?.privateContent;if(dataset.companies.some(c=>c.id===s?.company))companySelect.value=s.company;if(modes[s?.mode])modeSelect.value=s.mode;if(Array.isArray(s?.visible)&&s.visible.length===3)s.visible.forEach((v,i)=>visible[i]=!!v);}
+ function restore(state){const s=state?.privateContent;if(dataset.companies.some(c=>c.id===s?.company))companySelect.value=s.company;modeSelect.value=modes[s?.mode]?s.mode:'qoq';if(Array.isArray(s?.visible)&&s.visible.length===3)s.visible.forEach((v,i)=>visible[i]=!!v);}
  const storageKey='market-risk:semiconductor-chart:v1';
  try { restore({privateContent:JSON.parse(localStorage.getItem(storageKey))}); } catch {}
  function save(){try {localStorage.setItem(storageKey,JSON.stringify({company:companySelect.value,mode:modeSelect.value,visible}));} catch {}}
  function render(animate=false){
   tip.hidden=true;
-  const c=dataset.companies.find(c=>c.id===companySelect.value),{all,data}=prepare(c),m=modes[modeSelect.value],units=m.units||[c.unit+'/季',c.unit+'/季²'];
+  const c=dataset.companies.find(c=>c.id===companySelect.value),{all,data}=prepare(c),m=modes[modeSelect.value],units=m.units;
   const series=[{key:'rev',name:'营收',unit:c.unit},...m.keys.map((key,i)=>({key,name:m.names[i],unit:units[i]}))];
   const missing=data.filter(d=>d.missing).length;
   root.querySelector('.period').textContent=`${c.name} · ${data[0].q}—${data[7].q} · 8 季度 · ${missing?missing+' 季缺失补 0':'营收数据完整'}`;
@@ -50,7 +48,7 @@
   const ticks=w<300?[0,7]:w<440?[0,3,7]:w<620?[0,2,4,7]:data.map(d=>d.x);
   const bottom=svg.selectAll('g.bottom').data([0]).join('g').attr('class','bottom').attr('transform',`translate(0,${B})`).call(d3.axisBottom(x).tickValues(ticks).tickFormat(i=>data[i].end.slice(2)).tickSize(0).tickPadding(14));bottom.select('.domain').remove();
   bottom.selectAll('text').attr('text-anchor',d=>d===0?'start':d===7?'end':'middle');
-  const rightTitle=modeSelect.value==='difference'?(w<440?'一阶 / 二阶差分（单位见图例）':`差分 / ${c.unit}/季 · ${c.unit}/季²`):'增长率 % / 增速变化 百分点';
+  const rightTitle='增长率 % / 增速变化 百分点';
   const titles=[{id:'left',x:L,y:16,text:'营收 / '+c.unit,anchor:'start',axis:'y'},{id:'right',x:R,y:35,text:rightTitle,anchor:'end',axis:'y'},{id:'bottom',x:R,y:431,text:'财报截止月份（年-月）',anchor:'end',axis:'x'}];
   svg.selectAll('text.axis-title').data(titles,d=>d.id).join('text').attr('class','axis-title').attr('data-axis',d=>d.axis).attr('x',d=>d.x).attr('y',d=>d.y).attr('text-anchor',d=>d.anchor).text(d=>d.text);
   svg.selectAll('line.zero').data([0]).join('line').attr('class','zero').attr('x1',L).attr('x2',R).attr('y1',yr(0)).attr('y2',yr(0)).attr('stroke','var(--muted-foreground)').attr('stroke-width',1);
